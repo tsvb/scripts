@@ -1,0 +1,3360 @@
+-----------------------------------------------------------------------
+--BEFORE RUNNING THIS CLICK ON "RESULTS TO TEXT" BUTTON ABOVE---------
+--BEFORE RUNNING THIS CLICK ON "RESULTS TO TEXT" BUTTON ABOVE---------
+
+--2022-08-25 v10.5 TM --Added a missed version in BH Check going forward the description field should be the same in the version table
+                      --Removed unused/legacy code please reference v10.4 if any legacy code needs to be reviewed for future projects                	 			 			  				  						  					  		  			  				  			    			   
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+if exists (select * from sysobjects where name = 'spdbdesc' and xtype = 'U')
+drop table spdbdesc  
+go
+
+IF OBJECT_ID('tempdb..#msver') IS NOT NULL
+drop table #msver 
+go
+IF OBJECT_ID('tempdb..#tmplogspc') IS NOT NULL
+drop table #tmplogspc
+go
+
+IF OBJECT_ID('tempdb..#tmp_sizebydrive') IS NOT NULL
+drop table #tmp_sizebydrive
+go
+
+IF OBJECT_ID('tempdb..#dbinfo') IS NOT NULL
+drop table #dbinfo
+go
+
+IF OBJECT_ID('tempdb..#tmp_adequate_drivespace') IS NOT NULL
+drop table #tmp_adequate_drivespace
+go
+
+IF OBJECT_ID('tempdb..#tmp_drivespace') IS NOT NULL
+drop table #tmp_drivespace
+go
+
+IF OBJECT_ID('tempdb..#tmp_ng_products') IS NOT NULL
+DROP TABLE #tmp_ng_products
+go
+IF OBJECT_ID('tempdb..#Results') IS NOT NULL
+DROP TABLE #Results
+go
+IF OBJECT_ID('tempdb..#filecount') IS NOT NULL
+DROP TABLE #filecount
+go
+IF OBJECT_ID('tempdb..#ServerDatabasesNames') IS NOT NULL
+DROP TABLE #ServerDatabasesNames 
+go
+if exists (select * from sysobjects where name = 'KBM_Upgrade_Checklist' and xtype = 'p')
+drop procedure KBM_Upgrade_Checklist 
+go
+
+if exists (select * from sysobjects where name = 'NextGen_Upgrade_Checklist' and xtype = 'p')
+drop procedure NextGen_Upgrade_Checklist 
+go
+
+if exists (select * from sysobjects where name = 'NextGen_System_Analysis' and xtype = 'p')
+drop procedure NextGen_System_Analysis
+go
+
+IF EXISTS (select * from sysobjects where name = 'BTU_Version' and xtype = 'u')  --MZ-moved to top of script and added GO at end
+BEGIN
+
+--MZ-Added Alter statements wrapped with Begin/End with sp_executesql to add fields before statements run below if missing from btu_version (oldest DB's contained just btu_version column)
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES t JOIN INFORMATION_SCHEMA.COLUMNS c ON t.TABLE_NAME = c.TABLE_NAME
+      WHERE t.TABLE_NAME = 'btu_version' AND c.COLUMN_NAME = 'STARTED_FLAG')
+		EXEC sp_executesql 
+		N'alter TABLE [dbo].[btu_version] add [STARTED_FLAG] [varchar](100) NULL'
+
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES t JOIN INFORMATION_SCHEMA.COLUMNS c ON t.TABLE_NAME = c.TABLE_NAME
+      WHERE t.TABLE_NAME = 'btu_version' AND c.COLUMN_NAME = 'COMPLETED_FLAG')
+	EXEC sp_executesql 
+		N'alter TABLE [dbo].[btu_version] add [COMPLETED_FLAG] [varchar](100) NULL'
+
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES t JOIN INFORMATION_SCHEMA.COLUMNS c ON t.TABLE_NAME = c.TABLE_NAME
+      WHERE t.TABLE_NAME = 'btu_version' AND c.COLUMN_NAME = 'CREATE_TIMESTAMP')
+	EXEC sp_executesql 
+		N'alter TABLE [dbo].[btu_version] add [CREATE_TIMESTAMP] [datetime] NULL'
+
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES t JOIN INFORMATION_SCHEMA.COLUMNS c ON t.TABLE_NAME = c.TABLE_NAME
+      WHERE t.TABLE_NAME = 'btu_version' AND c.COLUMN_NAME = 'MODIFIED_TIMESTAMP')
+Begin
+	EXEC sp_executesql 
+		N'alter TABLE [dbo].[btu_version] add [MODIFIED_TIMESTAMP] [datetime] NULL'
+End
+
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES t JOIN INFORMATION_SCHEMA.COLUMNS c ON t.TABLE_NAME = c.TABLE_NAME
+      WHERE t.TABLE_NAME = 'btu_version' AND c.COLUMN_NAME = 'CREATED_BY')
+	EXEC sp_executesql 
+		N'alter TABLE [dbo].[btu_version] add [CREATED_BY] [varchar](50) NULL'
+
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES t JOIN INFORMATION_SCHEMA.COLUMNS c ON t.TABLE_NAME = c.TABLE_NAME
+      WHERE t.TABLE_NAME = 'btu_version' AND c.COLUMN_NAME = 'MODIFIED_BY')
+	EXEC sp_executesql 
+		N'alter TABLE [dbo].[btu_version] add [MODIFIED_BY] [varchar](50) NULL'
+
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES t JOIN INFORMATION_SCHEMA.COLUMNS c ON t.TABLE_NAME = c.TABLE_NAME
+      WHERE t.TABLE_NAME = 'btu_version' AND c.COLUMN_NAME = 'type')
+	EXEC sp_executesql 
+		N'alter TABLE [dbo].[btu_version] add [type] [varchar](50) NULL'
+
+IF NOT EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES t JOIN INFORMATION_SCHEMA.COLUMNS c ON t.TABLE_NAME = c.TABLE_NAME
+      WHERE t.TABLE_NAME = 'btu_version' AND c.COLUMN_NAME = 'description')
+	EXEC sp_executesql 
+		N'alter TABLE [dbo].[btu_version] add [description] [varchar](100) NULL'
+End
+GO
+
+-- $OriginalReleaseDate: 2016/11/02 $
+-- $Author: Thomas McQuiston $
+----------------------
+/*****************************************************************************************************
+NextGen_System_Analysis - Used to quickly determine pertinent database/server settings
+******************************************************************************************************/
+
+
+set nocount on
+declare @dbname sysname
+declare @dbid int
+declare @ng_version varchar(45)
+declare @KB_Vers varchar(45)
+declare @sql_servername sysname
+declare @sql_productversion varchar(128)
+declare @sql_productlevel varchar(20)
+declare @sql_edition varchar(128) 
+declare @sql_isclustered int
+declare @sql_isfulltext int -- ICD10
+declare @sql_collation varchar(128) 
+declare @sql_is2000 bit
+declare @sql_is2005 bit
+declare @sql_is2008 bit
+declare @sql_is2012 bit
+declare @sql_is2014 bit
+declare @sql_is2016 bit
+declare @sql_is2017 bit
+declare @sql_is2019 bit
+declare @sql_is64bit bit
+declare @sql_is32bit bit
+
+--New Variables
+DECLARE @tmp_filegroupname SYSNAME
+DECLARE @driveletter VARCHAR(1)
+DECLARE @freespace INT
+DECLARE @size_by_file FLOAT
+DECLARE @tmp_logical_path VARCHAR(75)
+DECLARE @tmp_size FLOAT
+DECLARE @create_timestamp DATETIME
+
+declare @print_str varchar(max)
+declare @sp_name sysname
+declare @sp_run_value int
+declare @os_platform varchar(128)
+declare @os_version varchar(128)
+declare @os_processors int
+declare @os_memory int
+declare @spaces char(10)
+declare @ISSUE char(32)
+
+Declare @field1 as varchar(100)
+Declare @field2 as varchar(100)
+Declare @field3 as varchar(100)
+Declare @field4 as varchar(100)
+Declare @field5 as varchar(100)
+Declare @field6 as varchar(100)
+
+declare @low nvarchar(11)
+declare @showdev	bit
+declare @name           sysname
+declare @exec_stmt nvarchar(625)
+declare @avgBackUpTime decimal(16,2)
+declare @avgBackUpTimeHours decimal(16,2)
+declare @NGROOT Varchar(MAX)
+declare @enterprise varchar(MAX)
+declare @HWPE_Version varchar(10)
+declare @OPHTempID varchar(4)
+select @OPHTempID = template_id from templates where template_name = 'eyeOtherTests'
+
+
+
+
+--New Tables
+   CREATE TABLE #tmplogspc (
+       DBName NVARCHAR(100)
+       ,LogSize REAL
+       ,LogPercentUsed REAL
+       ,STATUS INT
+       )
+
+	     CREATE TABLE #tmp_sizebydrive (
+       PATH_DRIVE_LETTER VARCHAR(1)
+       ,SUM_OF_FILES FLOAT
+       )
+        CREATE TABLE #dbinfo (
+	   NAME VARCHAR(20)
+	   ,LOGICAL_PATH VARCHAR(750)
+	   ,SIZE_IN_GB FLOAT
+       )
+       CREATE TABLE #tmp_adequate_drivespace (
+       PATH_DRIVE_LETTER VARCHAR(1)
+       ,SUM_OF_FILES FLOAT
+       ,freespace INT
+       )
+       CREATE TABLE #tmp_drivespace (
+       driveletter VARCHAR(1)
+       ,freespace INT
+       )
+----------------------------------------------
+
+create table spdbdesc
+(
+	dbname sysname,
+	owner sysname NULL,
+	created nvarchar(11),
+	dbid	smallint,
+	dbdesc	nvarchar(600)	null,
+	dbsize		nvarchar(13) null,
+	cmptlevel	tinyint
+)
+
+set @spaces = ''
+set @ISSUE = @spaces+'***ISSUE***'+@spaces
+
+declare @tmp_option_name varchar(255)
+declare @tmp_option_number int
+
+
+-- Nextgen Version
+SELECT  @sql_servername= convert(varchar(32),SERVERPROPERTY('servername'))
+, @sql_productversion = convert(varchar(128),SERVERPROPERTY('productversion'))
+, @sql_productlevel = convert(varchar(20),SERVERPROPERTY('productlevel'))
+, @sql_edition = convert(varchar(128),SERVERPROPERTY('edition'))
+, @sql_isclustered = convert(int,SERVERPROPERTY('isclustered'))
+, @sql_isfulltext = convert(int,SERVERPROPERTY('IsFullTextInstalled'))
+, @sql_collation = convert(varchar(128),SERVERPROPERTY('Collation'))
+, @dbname=db_name()
+, @dbid = db_id()
+	
+
+
+/* Is it sql server 2000,2005,2008, 2012 or 2014 */
+select @sql_is2000=0,@sql_is2005=0,@sql_is2008=0,@sql_is2012=0,@sql_is2014=0, @sql_is2016=0, @sql_is2017=0
+if  (substring (@sql_productversion,1,1)='9') 
+	set @sql_is2005=1
+else if 
+(substring (@sql_productversion,1,2)='10') 
+	set @sql_is2008=1
+else if 
+(substring (@sql_productversion,1,2)='11') 
+	set @sql_is2012=1
+	else if 
+(substring (@sql_productversion,1,2)='12') 
+	set @sql_is2014=1
+else if 
+(substring (@sql_productversion,1,1)='8')  
+	set @sql_is2000=1
+else if 
+(substring (@sql_productversion,1,2)='13')  
+	set @sql_is2016=1
+	else if 
+(substring (@sql_productversion,1,2)='14')  
+	set @sql_is2017=1
+	else if
+(substring (@sql_productversion,1,2)='15')  
+	set @sql_is2019=1
+
+	
+create table #msver
+( Indexid int
+,  FieldName sysname
+,  Internal_Value int
+, Character_Value varchar(255)
+)
+
+ INSERT INTO #msver
+	   EXEC master..xp_msver
+
+select @os_platform=Character_Value
+from #msver
+where FieldName='Platform'
+
+select @os_version=Character_Value
+from #msver
+where FieldName='WindowsVersion'
+
+select @os_processors=Internal_Value
+from #msver
+where FieldName='ProcessorCount'
+
+select @os_memory=Internal_Value
+from #msver
+where FieldName='PhysicalMemory'
+
+/* Is sql server 32 or 64 bit */
+select @sql_is64bit=0,@sql_is32bit=0
+if (select count(Character_value) from #msver where FieldName= 'Platform' and Character_value like ('%64%'))=0
+	BEGIN	
+		set @sql_is32bit=1
+	END
+	ELSE
+	BEGIN
+		set @sql_is64bit=1
+	END
+
+-- This is code to get the product information
+	declare @sql_error int
+	declare @product_rows int
+	declare @tmp_products varchar(1000)
+	declare @tmp_product_id varchar(10)
+	
+    set @tmp_products=''
+	if exists (select * from sysobjects where id =  OBJECT_ID(N'license_mstr') AND OBJECTPROPERTY(id, N'IsTable') = 1)
+	-- get data from license_mstr
+	begin
+
+		DECLARE curProducts CURSOR FOR
+		SELECT distinct product_id
+		from license_mstr
+	
+		OPEN curProducts
+		FETCH NEXT FROM curProducts INTO @tmp_product_id
+
+		-- Begin loop through cursor to append all the product_ids
+		WHILE @@FETCH_STATUS = 0
+		BEGIN
+			if (len(@tmp_products) = 0)
+				set @tmp_products = ltrim(rtrim(@tmp_product_id	))
+			else
+				set @tmp_products = @tmp_products + ', '+ltrim(rtrim(@tmp_product_id))	
+			
+			FETCH NEXT FROM curProducts INTO @tmp_product_id
+		END	-- end query to  process products
+
+		CLOSE curProducts
+		DEALLOCATE curProducts
+	end /*get data from license_mstr */
+/* End of code for products */
+
+/* EMR Template Cache Path */
+declare @template_cache varchar(255)
+select @template_cache=preference_value from preference_list where preference_id = 401
+
+/* EMR Document Cache Path */
+declare @document_cache varchar(255)
+select @document_cache=preference_value from preference_list where preference_id = 513
+
+
+/*Server UpTime Information */
+declare @sql_starttime varchar(26)
+declare @sql_startdays varchar(255)
+select	@sql_starttime=convert(varchar(26),login_time,109)
+,	@sql_startdays=datediff(dd, login_time, getdate())
+from	sys.sysprocesses 
+where spid = 1 
+
+
+
+-- Print statements for GENERAL
+print '----------------------------------------------------------------------'
+set @print_str='NextGen System Analysis Version 10.5 Results as of: ' + CONVERT(VARCHAR(19), GETDATE(),0)
+print @print_str
+print '----------------------------------------------------------------------'
+If not exists (select 1 from template_audit where modify_timestamp >= DATEADD(month,-6,GETDATE()))
+Begin
+Print ' '
+Print '--------------------------------------------------------'
+Print '            THIS CLIENT MAY BE PM-ONLY!!'
+Print '--This client has not used Templates in over 6 months--'
+Print '--------------------------------------------------------'
+End
+---------
+PRINT ''
+SET @PRINT_str='GENERAL' 
+PRINT @PRINT_str
+PRINT '----------'
+select top 1 @Enterprise = enterprise_name from enterprise
+
+Print 'Enterprise:                     ' + @enterprise
+
+declare @Prod_type varchar(7)
+select top 1 @Prod_type = product_id from version where (product_id LIKE 'HF%' OR product_id = 'PKG') order by create_timestamp desc
+If @Prod_type = 'PKG'
+select top 1 @ng_version = version
+from version
+where product_id = 'PKG' 
+order by create_timestamp desc
+Else 
+select top 1 @ng_version = description
+from version
+where product_id like 'HF%' 
+order by create_timestamp desc
+
+SET @PRINT_str='NextGen Full Version:	        ' + @ng_version
+PRINT @PRINT_str
+
+-- Nextgen Version
+SET @KB_Vers = ''
+SET @create_timestamp = ''
+
+IF EXISTS (select * from sysobjects where name = 'BTU_Version' and xtype = 'u')  
+begin
+select top 1  @KB_Vers=btu_version, @create_timestamp = create_timestamp
+from btu_version
+where  COMPLETED_FLAG = 'Y' and (btu_version not like '8.3.10.6%'and btu_version not like '8.3.10.5%' and btu_version not like '8.4.0.6%' and btu_version not like '8.4.2.6%' and btu_version not like '8.4.0.5%' and btu_version not like '8.4.1.5%' and btu_version not like '8.4.2.5%' and btu_version not like '8.4.3.5%' and btu_version not like '50.%' and btu_version not like '30.%' and btu_version not like '80.%' and btu_version not like '88.%'and btu_version not like '0.%' and btu_version not like '%datamapping%' and btu_version not like '8.4.4.5%' and btu_version not like '8.4.4.718'  and btu_version not like '8.4.3.776' and btu_version not like '8.4.0.CCBHCp2' and btu_version not like '88.0.1.0' and btu_version not like '8.4.3.815' and btu_version not like '8.4.3.850' and btu_version not like '88.0.4.9') 
+order by create_timestamp desc
+end
+else 
+begin
+	SET @KB_Vers = 'NO KBM VERSION FOUND, check kbm table below'
+	end
+
+SET @PRINT_str='KBM Version:					' + @KB_Vers
+PRINT @PRINT_str
+Print '                                       **See Quick Guide to select correct starting version in KUU'
+
+--SERVER/DB info
+SELECT  
+  @sql_servername= convert(varchar(32),SERVERPROPERTY('servername'))
+, @sql_productversion = convert(varchar(128),SERVERPROPERTY('productversion'))
+, @sql_productlevel = convert(varchar(20),SERVERPROPERTY('productlevel'))
+, @sql_edition = convert(varchar(128),SERVERPROPERTY('edition'))
+, @dbname=db_name()
+, @dbid = db_id()
+
+--server name
+SET @PRINT_str='Server Name:					' + @sql_servername
+PRINT @PRINT_str
+
+--db_name
+SET @PRINT_str='Database Name:					' + @dbname
+PRINT @PRINT_str
+Print ' '
+If exists(SELECT preference_value FROM preference_list WHERE preference_id = 403)
+begin
+Select @NGROOT =(SELECT CAST(REPLACE(preference_value,'EMR\Templates\Images', '') AS VARCHAR(100)) FROM preference_list WHERE preference_id = 403)
+Set @PRINT_str = 'NextGenRoot Location:			' +@NGROOT
+Print @PRINT_str
+end
+Else
+Begin
+Print 'NextGenRoot Location: No KBM Universal Preferences Were Found. Client May Be PM-Only. Please Verify with Client If You Are Unsure.'
+Print 'NextGenRoot Location Can Be Found In NGCONFIG In The Windows Folder; Listed As Server Drive'
+End
+Print ' '
+Print 'SQL\Windows Server Version Information: '
+Print '--------------------------------------- '
+Print ' '+ @@VERSION
+
+Print ' '
+Print 'Full Text Feature Status: '
+Print '--------------------------'
+IF @sql_isfulltext = 1
+Print 'Full Text Feature Is Installed'
+else
+Print 'Full Text Feature Is Not Installed'
+Print ' '
+Print ' '
+
+	Print ''
+declare @HAvail int
+set @HAvail = Convert(int,(SELECT SERVERPROPERTY ('IsHadrEnabled')))
+declare @LogShip int 
+if exists(Select primary_id
+,primary_database   -- SysName
+From msdb.dbo.log_shipping_primary_databases
+Where primary_database = @DBName)
+Begin
+set @LogShip = '1'
+End
+Else
+Set @LogShip = '0'
+select recovery_model_desc as 'Recovery Model:'
+from sys.databases
+where database_id = db_id()
+Print ' '
+Print ' '
+Print '---------------------------'
+Print '-Database Replication Status-'
+Print '---------------------------'
+SELECT
+Cast(A.name as varchar(25)) as 'Database',
+CASE
+    WHEN B.mirroring_state is NOT NULL or @HAvail = '1' or @LogShip = '1'  THEN 'Replication is Configured' 
+    ELSE 'Replication is not configured'
+END as 'Replication Status'
+FROM
+sys.databases A
+INNER JOIN sys.database_mirroring B
+ON A.database_id=B.database_id
+WHERE a.name = db_name()
+ORDER BY A.NAME
+IF EXISTS (SELECT * FROM sys.objects 
+WHERE object_id = OBJECT_ID(N'[sys].[dm_hadr_availability_group_states]') AND type in (N'U'))
+begin
+Print ' '
+Print ' '
+Print '---------------------------'
+Print '-----Always On Status------'
+Print '---------------------------'
+SELECT Groups.[Name] AS AGname
+FROM sys.dm_hadr_availability_group_states States
+INNER JOIN master.sys.availability_groups Groups ON States.group_id = Groups.group_id
+WHERE primary_replica = @@Servername;
+end
+
+Print ' '
+Print ' '
+Print 'Overall size of Current DB including Logs:'
+Print '------------------------------------------'
+
+/*
+**  If no database name given
+*/
+if @dbname is null
+	select @showdev = 0
+else select @showdev = 1
+
+/*
+**  See if the database exists
+*/
+if not exists (select * from master.dbo.sysdatabases
+	where (@dbname is null or name = @dbname))
+	begin
+		print @dbname + ': DOES NOT EXIST'
+	end
+
+select @low = convert(varchar(11),low) from master.dbo.spt_values
+			where type = N'E' and number = 1
+			
+/*
+**  Initialize spdbdesc from sysdatabases
+*/
+insert into spdbdesc (dbname, owner, created, dbid, cmptlevel)
+		select name, suser_sname(sid), convert(nvarchar(11), crdate),
+			dbid, cmptlevel from master.dbo.sysdatabases
+			where (@dbname is null or name = @dbname)
+
+/*
+** Check if you have access to database
+** if have access set size and collation
+*/
+select @low = convert(varchar(11),low) from master.dbo.spt_values
+			where type = N'E' and number = 1
+
+declare ms_crs_c1 cursor for
+	select db_name (dbid) from spdbdesc
+open ms_crs_c1
+fetch ms_crs_c1 into @name
+while @@fetch_status >= 0
+begin
+	if (has_dbaccess(@name) <> 1)
+	begin
+	  delete spdbdesc where current of ms_crs_c1
+	  raiserror(15622,-1,-1, @name)
+	end
+	else
+		begin
+			/* Insert row for each database */
+			select @exec_stmt = 'update spdbdesc
+						set dbsize = (select str(convert(dec(15),sum(size))* ' + @low + '/ 1048576/1024,10,4)+ N'' GB'' from '
+ 						+ quotename(@name, N'[') + N'.dbo.sysfiles) WHERE current of ms_crs_c1'
+
+			execute (@exec_stmt)
+		end
+	fetch ms_crs_c1 into @name
+end
+deallocate ms_crs_c1
+
+DECLARE C CURSOR for
+select name = substring(dbname,1,25),
+	db_size = dbsize 
+from  spdbdesc where dbname = db_name()
+order by dbsize desc
+
+OPEN C
+FETCH C INTO @field1, @field2
+WHILE (@@FETCH_STATUS=0) BEGIN
+------------------------------
+set @print_str = convert(char(20),@field1)+convert(char(12),@field2)  
+   print @print_str
+FETCH C INTO @field1, @field2
+END
+CLOSE C
+DEALLOCATE C
+DECLARE @Database_Name sysname = db_name()
+DECLARE @space_to_add float
+DECLARE @dbfreepct int
+DECLARE @dbtotalsize int
+DECLARE @dbavailspace int
+DECLARE @corespace INT
+DECLARE @indexspace INT
+DECLARE @logfilesize INT
+DECLARE @logspace INT
+
+CREATE TABLE #Results ([Database Name] VARCHAR(30),  --sysname, 
+[File Name] VARCHAR(50), --sysname, 
+[Physical Name] NVARCHAR(130), --(260),
+data_space_id int,
+[File Type] VARCHAR(4), 
+[Total Size in Mb] INT, 
+[Available Space in Mb] INT,
+[Free Space %] INT, 
+[Growth Units] VARCHAR(15), 
+[Max File Size in Mb] INT)   
+
+CREATE TABLE #filecount
+    (data_space_id int,
+    [# of files] int,
+    name varchar(20)
+    )
+
+;WITH CTE AS
+(
+SELECT DB_NAME()AS [Database Name] , 
+       name AS [File Name] , 
+       physical_name AS [Physical Name] ,
+	  data_space_id, 
+       [File Type] = CASE type
+                     WHEN 0 THEN 'Data'
+                     WHEN 1 THEN 'Log'
+                     END , 
+       [Total Size in Mb] = CASE CEILING(size / 128)
+                            WHEN 0 THEN 1
+                                ELSE CEILING(size / 128)
+                            END , 
+       [Available Space in Mb] = CASE CEILING(size / 128)
+                                 WHEN 0 THEN 1 - CAST(FILEPROPERTY(name , 'SpaceUsed')AS int) / 128
+                                     ELSE size / 128 - CAST(FILEPROPERTY([name] , 'SpaceUsed')AS int) / 128
+                                 END , 
+       [Growth Units] = CASE is_percent_growth
+                        WHEN 1 THEN CAST(growth AS varchar(20))
+                            ELSE CAST(growth * 8 / 1024 AS varchar(20))
+                        END , 
+       [Max File Size in Mb] = CASE max_size
+                               WHEN-1 THEN NULL
+                               WHEN 268435456 THEN NULL
+                                   ELSE max_size
+                               END
+  FROM sys.database_files
+)
+INSERT INTO #results([Database Name], [File Name], [Physical Name], data_space_id,   
+[File Type], [Total Size in Mb], [Available Space in Mb], [Free Space %],   
+[Growth Units], [Max File Size in Mb])  
+               SELECT cast([Database Name] as varchar(50)),   
+               [File Name],   
+               [Physical Name],
+			data_space_id,   
+               [File Type],   
+               [Total Size in Mb] AS [DB Size (Mb)],   
+               [Available Space in Mb] AS [DB Free (Mb)],   
+               CEILING(CAST([Available Space in Mb] AS decimal(10,1))/[Total Size in Mb]*100) AS [Free Space %],
+               [Growth Units],   
+               [Max File Size in Mb] AS [Grow Max Size (Mb)]    
+               FROM CTE    
+               WHERE [Database Name] = @Database_Name 
+
+INSERT INTO #filecount
+SELECT DISTINCT r.data_space_id,COUNT(r.data_space_id) AS '# of file', sf.name 
+FROM #Results r LEFT JOIN sys.filegroups sf ON r.data_space_id = sf.data_space_id
+GROUP BY r.data_space_id, sf.name
+
+SET @dbfreepct =  (SELECT CEILING(CAST(sum([Available Space in Mb]) AS decimal(10,1))/SUM([Total Size in Mb])*100) FROM #Results r INNER JOIN #filecount f ON r.data_space_id = f.data_space_id
+  WHERE f.name IS NOT NULL)
+
+SET @dbtotalsize = (SELECT SUM([Total Size in Mb]) FROM #Results r INNER JOIN #filecount f ON r.data_space_id = f.data_space_id
+  WHERE f.name IS NOT NULL)
+
+SET @dbavailspace = (SELECT SUM([Available Space in Mb]) FROM #Results r INNER JOIN #filecount f ON r.data_space_id = f.data_space_id
+  WHERE f.name IS NOT NULL)
+Print ' '
+Print ' '
+Print 'CCM Template Installation Check'
+Print '-------------------------------'
+if exists (Select top 1 template_name from templates where template_name like 'CCM%')
+Print 'CCM Templates are installed'
+else 
+Print 'No CCM Templates found.'
+Print ' '
+Print ' '
+Print 'INF Install Check:'
+Print '------------------'
+IF EXISTS (select * from sysobjects where name = 'BTU_Version' and xtype = 'u') 
+Begin
+declare @INF_Version varchar(15)
+select top 1 @INF_Version = btu_version from btu_version where btu_version like '50.%' or description like 'INF Solution%' order by create_timestamp desc
+if exists(Select top 1 * from btu_version where btu_version like '50.%' or btu_version like '55.%' or description like 'INF Solution%' order by create_timestamp desc)
+Begin
+print 'INF Version ' +@INF_Version + ' Installed'
+End
+else
+Begin
+print 'INF Is Not Installed'
+End
+END
+Else
+Print 'No BTU_Version table is present...INF is not installed'
+print ''
+print ''
+Print 'ETS Install Check:'
+Print '------------------'
+IF EXISTS (select * from sysobjects where name = 'BTU_Version' and xtype = 'u') 
+Begin
+declare @ETS_Version varchar(15)
+select top 1 @ETS_Version = btu_version from btu_version where btu_version like '30.%' or description like '%Therapy Suite%' order by create_timestamp desc
+if exists(Select top 1 * from btu_version where btu_version like '30.%' or btu_version like '33.%' or description like '%Therapy Suite%' order by create_timestamp desc)
+Begin
+print 'ETS Version ' +@ETS_Version + ' Installed'
+End
+else
+Begin
+print 'ETS Is Not Installed'
+End
+END
+Else
+Print 'No BTU_Version table is present...ETS is not installed'
+print ''
+print ''
+Print 'Medication Inventory Control Solution(MICS) Install Check:'
+Print '------------------'
+IF EXISTS (select * from sysobjects where name = 'BTU_Version' and xtype = 'u') 
+Begin
+declare @MICS_Version varchar(15)
+select top 1 @MICS_Version = btu_version from btu_version where btu_version like '10.%' order by create_timestamp desc
+if exists(Select top 1 * from btu_version where btu_version like '10.%' order by create_timestamp desc)
+Begin
+print 'MICS Version ' +@MICS_Version + ' Installed'
+End
+else
+Begin
+print 'MICS Is Not Installed'
+End
+END
+Else
+Print 'No BTU_Version table is present...MICS is not installed'
+print ''
+print ''
+Print 'Ortho Suite Install Check:'
+Print '--------------------------'
+IF EXISTS (select * from sysobjects where name = 'BTU_Version' and xtype = 'u') 
+Begin
+declare @Ortho_Version varchar(15)
+select top 1 @Ortho_Version = btu_version from btu_version where btu_version like '80.%' order by create_timestamp desc
+if exists(Select top 1 * from btu_version where btu_version like '80.%' order by create_timestamp desc)
+Begin
+print 'Ortho Version ' +@Ortho_Version + ' Installed'
+End
+else
+Begin
+print 'Ortho Is Not Installed'
+End
+END
+Else
+Print 'No BTU_Version table is present...Ortho Suite is not installed'
+print ''
+print ''
+Print 'Procedure Inventory Control Solution (PICS) Install Check:'
+Print '----------------------------------------------------------'
+IF EXISTS (select * from sysobjects where name = 'BTU_Version' and xtype = 'u') 
+Begin
+declare @PICS_Version varchar(15)
+select top 1 @PICS_Version = btu_version from btu_version where btu_version like '20.%' order by create_timestamp desc
+if exists(Select top 1 * from btu_version where btu_version like '20.%' or btu_version like '20.%' order by create_timestamp desc)
+Begin
+print 'PICS Version ' +@PICS_Version + ' Installed'
+End
+else
+Begin
+print 'PICS Is Not Installed'
+End
+END
+Else
+Print 'No BTU_Version table is present...PICS is not installed'
+print ''
+print ''
+
+/***************************************************************************************************************************************************
+Check for medfusion mapped CPT codes
+If none are mapped then mape CPT code 99201 for Clinical Visit Summary Generation
+Print list of all mapped CPT Codes
+****************************************************************************************************************************************************/
+
+If Not exists (select *
+		from ngkbm_custom_dbp_item_dtl_ ncd
+		--where txt_qualifier_2 = '99214'
+		where ncd.txt_dbpicklist_name = 'Visit Codes' and ncd.txt_qualifier_1 = 'Office Visit_mf' and ncd.txt_list_item = 'medfusion ccd')
+		BEGIN
+PRINT 'No mapped CPT Codes Found Mapping Default CPT Code 99201'
+DECLARE @RC int
+DECLARE @dbp_name varchar(26)
+DECLARE @list_item varchar(1000)
+DECLARE @q1 varchar(75)
+DECLARE @q2 varchar(75)
+DECLARE @practice_id char(4)
+DECLARE @edit_list varchar(1)
+DECLARE @edit_loc varchar(1)
+DECLARE @edit_prac varchar(1)
+DECLARE @edit_prov varchar(1)
+DECLARE @edit_q1 varchar(1)
+DECLARE @edit_q2 varchar(1)
+DECLARE @edit_mode varchar(1)
+
+-- TODO: Set parameter values here.
+	
+  set  @dbp_name = 'Visit Codes'
+  set @list_item = 'medfusion ccd'
+  set @q1 = 'Office Visit_mf'
+  set @q2 = '99201'
+  set @practice_id = ''
+  set @edit_list = 'Y'
+  set @edit_loc = 'Y'
+  set @edit_prac = 'Y'
+  set @edit_prov = 'Y'
+  set @edit_q1 = 'Y'
+  set @edit_q2 = 'Y' 
+  set @edit_mode = 'F'
+
+EXECUTE @RC = [dbo].[add_custom_dbp_item] 
+   @dbp_name
+  ,@list_item
+  ,@q1
+  ,@q2
+  ,@practice_id
+  ,@edit_list
+  ,@edit_loc
+  ,@edit_prac
+  ,@edit_prov
+  ,@edit_q1
+  ,@edit_q2
+  ,@edit_mode
+
+End
+
+DECLARE @ConfiguredCPTCodes nvarchar(128)
+
+DECLARE cur CURSOR FOR
+		select txt_qualifier_2
+		from ngkbm_custom_dbp_item_dtl_ ncd
+		where ncd.txt_dbpicklist_name = 'Visit Codes' and ncd.txt_qualifier_1 = 'Office Visit_mf' and ncd.txt_list_item = 'medfusion ccd'
+
+OPEN cur
+
+FETCH NEXT FROM cur INTO @ConfiguredCPTCodes;
+WHILE @@FETCH_STATUS = 0
+BEGIN   
+PRINT 'CPT Code ' + @ConfiguredCPTCodes + ' Configured'
+FETCH NEXT FROM cur INTO @ConfiguredCPTCodes;
+END
+
+CLOSE cur;
+DEALLOCATE cur;
+Print ' '
+Print ' '
+Print ' '
+
+/*Check for user with special permissions */
+IF  EXISTS (SELECT user_name(member_principal_id) FROM   sys.database_role_members WHERE  user_name(role_principal_id) = 'db_owner'and user_name(member_principal_id) = 'medfusion')
+BEGIN
+Print 'Medfusion User Already Exsists in DB';
+EXEC sp_addsrvrolemember @loginame = N'medfusion', @rolename = N'sysadmin';
+ALTER USER [medfusion] WITH DEFAULT_SCHEMA = dbo;
+END
+
+/* Special DB User and DB User Permissions */
+IF NOT EXISTS (SELECT * FROM master.dbo.SysLogins WHERE loginname = N'medfusion')
+BEGIN
+	DECLARE @logindb nvarchar(132), @loginlang nvarchar(132) 
+	SELECT @logindb = N'master', @loginlang = N'us_english'
+	IF @logindb IS NULL OR NOT EXISTS (SELECT * FROM master.dbo.SysDatabases WHERE name = @logindb)
+		SELECT @logindb = N'master'
+	IF @loginlang IS NULL OR (NOT EXISTS (SELECT * FROM master.dbo.SysLanguages WHERE name = @loginlang) AND @loginlang <> N'us_english')
+		SELECT @loginlang = @@language
+	EXEC sp_addlogin N'medfusion', N'MemberMap1', @logindb, @loginlang
+END
+/*
+ELSE
+BEGIN
+	EXEC sp_password N'medfusion', N'MemberMap1', N'medfusion'
+END
+*/
+
+IF NOT EXISTS (SELECT * FROM dbo.sysusers WHERE name = N'medfusion' AND uid < 16382)
+BEGIN
+	EXEC sp_grantdbaccess N'medfusion', N'medfusion'
+	EXEC sp_addrolemember N'db_owner', N'medfusion'
+	ALTER USER [medfusion] WITH DEFAULT_SCHEMA = dbo;
+	PRINT 'Medfusion User Created';
+END
+Print ' ' 
+Print ' '
+if exists (Select top 1 version from version where product_id = 'HWPE' order by create_timestamp desc)
+Begin
+Set @HWPE_Version = (select top 1 version from version where product_id = 'HWPE' order by create_timestamp desc)
+Print 'Healthwise Patient Education Version Check'
+Print '-------------------------------------------'
+Print 'Healthwise Patient Education Version is:' + @HWPE_Version
+Print ' '
+END
+Else
+Begin
+Print 'No version of Healthwise was found '
+PRint ' '
+End
+Print 'RCxRules Version Check:'
+Print '----------------------'
+If exists(select top 1 * from version where product_id = 'RCX' order by create_timestamp desc)
+Begin
+SELECT MAX([version]) FROM [version] WHERE product_id = 'RCX' AND delete_ind <> 'Y'
+Print ' '
+Print ' ' 
+End
+Else
+Begin
+Print 'Current RCxRules version not found and may need to be updated if an older version exists. Please double check using the client list on the confluence page listed below'
+Print 'https://confluence.nextgen.com/display/EICRRE/Charge+Review+Engine+-+Client+Version+Matrix'
+Print ' '
+Print ' '
+End
+Print 'Credit Card Vendor Check'
+Print '-------------------------'
+select practice_id, 
+CASE
+    WHEN cc_process_ind = 'Y' and cc_vendor_id = 1  THEN 'Credit Card Vendor is InstaMed'
+    WHEN cc_process_ind = 'Y' and cc_vendor_id = 2 THEN 'Credit Card Vendor is TransFirst'
+    WHEN cc_process_ind = 'N' THEN 'This Client Has No Credit Card Vendor'
+End
+from practice_misc
+Print ' '
+/* 
+1 = Enabled and 0 = disabled
+*/
+--declare @totalsize_server bigint
+--select @totalsize_server = convert(bigint, SUM(size)) * 8 / 1048576
+--FROM sys.master_files
+--PRINT 'Sum of all databases on the server in GB: ' +rtrim(convert(CHAR(15), @totalsize_server))
+--PRINT '-----------------------------------------'
+
+;
+--CTE using reverse function to find last instance of \ and pull everything after it in the address which is the DB Name. Physical Name is often more accurate then Name for a DB due to restores from old DB's.
+--Then use substring to remove the last 4 characters which is the file type (.mdf)
+WITH ServerDatabases AS (
+select name, --physical_name,  
+right(physical_name, charINDEX('\',reverse(physical_name))-1) as physicalNameMDF,
+substring(right(physical_name, charINDEX('\',reverse(physical_name))-1),1,LEN(right(physical_name, charINDEX('\',reverse(physical_name))-1))-4) as physicalNameDB, 
+size as sizeMDF 
+FROM sys.master_files
+where type_desc='ROWS'
+and file_id=1 
+),
+ServerDatabasesNames AS (
+select name, --physical_name, physicalNameMDF, 
+physicalNameDB, 
+sizeMDF
+from ServerDatabases
+where physicalNameMDF not in ('master.mdf', 'msdbdata.mdf', 'model.mdf', 'mssqlsystemresource.mdf', 'tempdb.mdf')  --SQL Server System databases
+)
+select name, physicalNameDB into #ServerDatabasesNames from ServerDatabasesNames --create a temp table from the CTE because you can't sort the comma delimited list directly from a CTE
+order by 2,1;
+
+--End of DB Check
+Print ' '
+Print '--------------------------------------------------------------------------'
+Print 'Please Ensure That ALL Preferences Are Pointing To The Correct Environment'
+Print '--------------------------------------------------------------------------'
+Print ' '
+---------------------------------
+--KBM UU universal preferences
+Print ' '
+Print ' General Universal Preferences'
+Print ' ----------------------------'
+
+set nocount on
+--- lists all the universal preferences required for upgrade utility and their values
+-------------------------------------------------------------------------------------------
+-- Add cursor for printing each record one at a time
+-----------------
+DECLARE C CURSOR for
+
+SELECT  
+	'[' + rtrim((b.group_name + ' \ ' + substring(a.preference_name,1,25))) + '] =' as Preference, 
+	substring(rtrim(c.preference_value),1,100) as Value
+FROM 	
+	preferences a, preference_groups b, preference_list c
+WHERE
+	a.group_id = b.group_id
+	and c.preference_id = a.preference_id
+	and b.group_name in ('Documents','Templates','Images','Graphing','Reports')
+	and c.user_id = -1
+	and c.preference_id IN (302,515,504,505,1001,203,201,801,1748,303,809,701,305,402,1760,802,301,405,404,403,406,1749,1792,1767,1768,1777)
+ORDER BY 
+	 preference
+
+OPEN C
+FETCH C INTO @field1, @field2
+WHILE (@@FETCH_STATUS=0) BEGIN
+------------------------------
+Print @field1 + ' ' + @field2
+FETCH C INTO @field1, @field2
+END
+CLOSE C
+DEALLOCATE C
+print ''
+print ''
+
+---------------------------------
+--Walkthrough universal preferences
+Print ' '
+Print ' Walkthrough Universal Preferences'
+Print ' ---------------------------------'
+
+set nocount on
+--- lists all the universal preferences required for walkthrough and their values
+-------------------------------------------------------------------------------------------
+-- Add cursor for printing each record one at a time
+-----------------
+DECLARE C CURSOR for
+
+	SELECT  
+	'[' + rtrim((b.group_name + ' \ ' + substring(a.preference_name,1,25))) + '] =' as Preference, 
+	substring(rtrim(c.preference_value),1,100) as Value
+FROM 	
+	preferences a, preference_groups b, preference_list c
+WHERE
+	a.group_id = b.group_id
+	and c.preference_id = a.preference_id
+	and b.group_name in ('Documents','Templates', 'Audio')
+	and c.user_id = -1
+	and c.preference_id IN (501, 412, 513, 401,602)
+ORDER BY 
+	 preference
+
+OPEN C
+FETCH C INTO @field1, @field2
+WHILE (@@FETCH_STATUS=0) BEGIN
+------------------------------
+Print @field1 + ' ' + @field2
+FETCH C INTO @field1, @field2
+END
+CLOSE C
+DEALLOCATE C
+print ''
+print ''
+
+---------------------------------
+--Cache universal preferences
+Print ' '
+Print ' Cache Universal Preferences'
+Print ' ---------------------------------'
+
+set nocount on
+--- lists all the universal preferences required for walkthrough and their values
+-------------------------------------------------------------------------------------------
+-- Add cursor for printing each record one at a time
+-----------------
+DECLARE C CURSOR for
+
+	SELECT  
+	'[' + rtrim((b.group_name + ' \ ' + substring(a.preference_name,1,25))) + '] =' as Preference, 
+	substring(rtrim(c.preference_value),1,100) as Value
+FROM 	
+	preferences a, preference_groups b, preference_list c
+WHERE
+	a.group_id = b.group_id
+	and c.preference_id = a.preference_id
+	and b.group_name in ('Documents','Templates', 'Audio')
+	and c.user_id = -1
+	and c.preference_id IN (513,401)
+ORDER BY 
+	 preference
+
+OPEN C
+FETCH C INTO @field1, @field2
+WHILE (@@FETCH_STATUS=0) BEGIN
+------------------------------
+Print @field1 + ' ' + @field2
+FETCH C INTO @field1, @field2
+END
+CLOSE C
+DEALLOCATE C
+print ''
+print ''
+--End of Universal Pref Check
+
+---------------------------------
+--################################
+--txtext document settings
+PRINT 'TxText document settings status'
+Print '-------------------------------'
+IF (SELECT doc_word_ind FROM sys_info) = 'Y'
+	PRINT 'TxText is ACTIVATED'
+ELSE
+	PRINT 'HighEdit is ACTIVATED'
+		
+PRINT ''
+--End of TxText Check
+
+-------------
+Print ''
+Print ''
+Print 'Restore History'
+Print '---------------'
+print ''
+print 'Target DB Name      Source DB Name      Restore Date   Backup Start Date   Backup End Date   Backup File Used For Restore'
+print '--------------      --------------      ------------   -----------------   ---------------   ----------------------------'	
+DECLARE C CURSOR for
+
+SELECT top 5 [rs].[destination_database_name], --128
+[rs].[restore_date], --datetime
+[bs].[backup_start_date], --datetime
+[bs].[backup_finish_date], --datetime
+[bs].[database_name] as [source_database_name], --128
+[bmf].[physical_device_name] as [backup_file_used_for_restore]  --128
+FROM msdb..restorehistory rs
+INNER JOIN msdb..backupset bs
+ON [rs].[backup_set_id] = [bs].[backup_set_id]
+INNER JOIN msdb..backupmediafamily bmf 
+ON [bs].[media_set_id] = [bmf].[media_set_id] 
+WHERE [rs].[destination_database_name]=db_name()
+ORDER BY [rs].[restore_date] DESC
+
+OPEN C
+FETCH C INTO @field1, @field2, @field3, @field4, @field5, @field6
+WHILE (@@FETCH_STATUS=0) BEGIN
+------------------------------
+set @print_str = convert(char(20),@field1)+convert(char(20),@field5)+convert(char(12),@field2)+'   '+convert(char(12),@field3)+'        '+convert(char(12),@field4)+'      '+convert(char(128),@field6)    
+   print @print_str
+FETCH C INTO @field1, @field2, @field3, @field4, @field5, @field6
+END
+CLOSE C
+DEALLOCATE C
+Print ' '
+Print ' '
+--End of Restore Check
+
+IF EXISTS (select * from sysobjects where name = 'BTU_Version' and xtype = 'u')  
+BEGIN
+set nocount on
+ 
+	print ''
+	print 'KBM Version (Top 10)               Date Install Started/Install Finished'
+	print '--------------------               -------------------------------------'
+
+DECLARE C CURSOR for
+
+SELECT top 10
+	convert(char(35),(rtrim(ltrim(BTU_VERSION)))) as BTU, isnull(cast(create_timestamp as varchar),'Not specified'), isnull(cast(modified_timestamp as varchar),'Not specified')  --MZ-added modified_timestamp
+	from 
+		btu_version
+		where btu_version not like '50.1.0.3%' and btu_version not like '30.2.1.5%' and btu_version not like '80.2.5.0%' and btu_version not like '88.0.0.0%'
+	order by 
+		modified_timestamp desc, BTU_VERSION desc   
+
+
+OPEN C
+FETCH C INTO @field1, @field2, @field3  
+WHILE (@@FETCH_STATUS=0) BEGIN
+------------------------------
+
+Print @field1 + ' ' + @field2 + ' / ' + @field3
+FETCH C INTO @field1, @field2, @field3
+END
+CLOSE C
+DEALLOCATE C
+End
+ELSE
+Print 'BTU_Version table does not exist'
+
+--End of KBM Version Check
+--################################
+-- Versions
+
+--EHR versions
+Print ''
+print ''
+print 'EHR Version (Top 10)                Version         Date Installed/Applied'
+print '--------------------                -------         ----------------------'
+
+set nocount on
+
+IF EXISTS (select * from sysobjects where name = 'Version' and xtype = 'u')
+Begin
+
+DECLARE C CURSOR for
+
+SELECT top 10
+       convert(char(35),(rtrim(ltrim(product_id))) + ' (' + description + ')' ) as Product, convert(char(15),version) as version, modify_timestamp 
+       from 
+              version 
+       where description like '%Package%' OR description LIKE '%Hot Fix%' or description like '%HF%' or description like '%Patch%'
+	   and description not like '%CDS%'
+	   and description not like '%KBM%'
+       order by 
+              modify_timestamp desc
+
+OPEN C
+FETCH C INTO @field1, @field2, @field3
+WHILE (@@FETCH_STATUS=0) BEGIN
+------------------------------
+
+Print @field1 + ' ' + @field2 + ' ' + @field3
+FETCH C INTO @field1, @field2, @field3
+END
+
+CLOSE C
+DEALLOCATE C
+End
+ELSE
+Print 'Version table does not exist'
+Print ' '
+Print ' '
+-- End of Core Version Check
+
+-- Create the table
+	CREATE TABLE #ng_configure_ok (
+	  config_id int
+,	  ng2000_ok INT
+,	  ng2005_ok INT
+,	  order_id INT
+,	  config_type varchar(20)	)
+
+declare @order_id int
+declare @config_type varchar(20)
+declare @tmp_config_id int
+declare	@tmp_ng2000_ok int
+declare	@tmp_ng2005_ok int
+declare @tmp_config_type varchar(20)
+declare @last_config_type varchar(20)
+declare	@tmp_value int
+declare	@tmp_comment char(50)
+declare	@tmp_ng_ok int
+
+
+set @order_id=0
+
+/* Processor @config_type = PROCESSOR */
+set @config_type = 'PROCESSOR'
+
+
+set @order_id=@order_id+1
+insert into #ng_configure_ok /* Parallelism  */
+values (1539,-1,-1,@order_id,@config_type) 
+
+set @order_id=@order_id+1
+insert into #ng_configure_ok /* cost threshold for parallelism */
+values (1538,5,10,@order_id,@config_type) 
+
+
+set @config_type = 'MEMORY'
+
+
+set @order_id=@order_id+1
+insert into #ng_configure_ok /* Maximum Server Memory */
+values (1544,2147483647,2147483647,@order_id,@config_type) 
+
+
+
+-- Declare cursor
+	DECLARE cur_sp_config CURSOR FOR
+	 select A.config_id
+	,A.ng2000_ok
+	,A.ng2005_ok 
+	,A.config_type
+	,convert(varchar(max),B.value)
+	,case when A.config_id in (1581,1568) then B.name  else B.description end
+from #ng_configure_ok A
+left OUTER JOIN sys.configurations B on A.config_id=B.configuration_id
+order by A.order_id
+
+
+open cur_sp_config
+
+FETCH NEXT FROM cur_sp_config
+	   INTO @tmp_config_id,@tmp_ng2000_ok, @tmp_ng2005_ok,@tmp_config_type,@tmp_value,@tmp_comment 
+
+set @last_config_type=''
+
+WHILE @@FETCH_STATUS = 0
+BEGIN
+
+if (@last_config_type <> @tmp_config_type) 
+begin
+	print ''
+	print @tmp_config_type
+	print '---------'
+
+	if  @tmp_config_type = 'PROCESSOR' 
+	begin
+		set @print_str = convert(char(50),'Number of Processors') +convert(varchar(10),@os_processors)	
+		print @print_str
+	end	
+		
+	if  @tmp_config_type = 'MEMORY' 
+	begin
+		set @print_str = convert(char(50),'Amount of Memory') + convert(varchar(10),@os_memory)
+		print @print_str
+	END	
+
+end
+set @last_config_type = @tmp_config_type
+
+if (@sql_is2005 = 1 or @sql_is2008 = 1) 
+	set @tmp_ng_ok=@tmp_ng2005_ok
+else 
+	set @tmp_ng_ok=@tmp_ng2000_ok
+
+if (@tmp_ng_ok is not null)
+begin
+
+	/*1581 is optimize for adhoc workloads */
+	if  (@tmp_config_id <> 1581 )
+		set @print_str=@tmp_comment + convert(char(10),@tmp_value)	
+	else
+		begin
+			
+			if @tmp_value = 0 
+				set @print_str=@tmp_comment + 'FALSE'
+			else
+				set @print_str=@tmp_comment + 'TRUE'	
+			
+			DECLARE	 @AdHocSizeInMB decimal (28,2)
+			, @TotalSizeInMB decimal (28,2)
+
+			SELECT @AdHocSizeInMB = SUM(CAST((CASE WHEN usecounts = 1 AND LOWER(objtype) = 'adhoc' 
+			THEN size_in_bytes ELSE 0 END) as decimal(28,2))) / 1048576,
+			@TotalSizeInMB = SUM (CAST (size_in_bytes as decimal (28,2))) / 1048576
+			FROM sys.dm_exec_cached_plans 
+			
+			
+			if (@tmp_value = 0) and  (@AdHocSizeInMB > 200 or ((@AdHocSizeInMB / @TotalSizeInMB) * 100) > 25 )
+				set @print_str=convert(char(60),@print_str) + @ISSUE +'Recommended Value is TRUE'
+
+		end
+		
+	if (@tmp_ng_ok <> @tmp_value) and (@tmp_config_id <> 1544 /*max server memory */) and (@tmp_config_id <> 1534 /* user options */) 
+		and (@tmp_config_id <> 1520 /* remote query timeout */) and (@tmp_config_id <> 1539 /* parallelism */)
+		and (@tmp_config_id <> 1543 /* minimum server memory */)  and (@tmp_config_id <> 1581 /* optimize */)
+		set @print_str=convert(char(60),@print_str) + @ISSUE +'Recommended Value is '+convert(varchar(10),@tmp_ng_ok)
+
+
+	/* - Parallelism if os_processors > 4 then 25%-50% of processors (max 8)*/
+	if  (@tmp_config_id = 1539 ) and (@os_processors > 4) and
+		(((convert(float,@tmp_value)/convert(float,@os_processors)) * 100) < 25 or ((convert(float,@tmp_value)/convert(float,@os_processors)) * 100) > 50)
+	begin
+			set @print_str=convert(char(60),@print_str) + @ISSUE +'Recommended Value is 25% - 50% of processors (max 8)'
+	end
+	else if  (@tmp_config_id = 1539 ) and (@os_processors <= 4) and (@tmp_value <> 1)
+	begin
+			set @print_str=convert(char(60),@print_str) + @ISSUE +'Recommended Value is 1'
+
+	end
+
+
+	/* remote query timeout - Can be 0 or 600 */
+	if (@tmp_ng_ok <> @tmp_value) and (@tmp_config_id = 1520 ) and (@tmp_value <> 600)
+	set @print_str=convert(char(60),@print_str) + @ISSUE +'Recommended Value is '+convert(varchar(10),'0 or 600')
+	
+	/* - if not default to all memory check it's using at least 80% of total memory */
+	if (@tmp_ng_ok <> @tmp_value) and (@tmp_config_id = 1544 ) and 
+		((convert(float,@tmp_value)/convert(float,@os_memory)) * 100) < 80
+			set @print_str=convert(char(60),@print_str) + @ISSUE +'Recommended Value is at least 80% of OS Memory'
+	
+	
+	/* - Less than 64GB os memory 10% needs to be left for the filesystem */
+	if (@tmp_ng_ok <> @tmp_value) and (@tmp_config_id = 1544 ) and (@os_memory <= 65536) and 
+		((convert(float,@tmp_value)/convert(float,@os_memory)) * 100) > 90
+			set @print_str=convert(char(60),@print_str) + @ISSUE +'Recommended Value not use more than 90% of OS memory'
+
+	/* - > 64GB need 6GB left for the OS */
+	if (@tmp_ng_ok <> @tmp_value) and (@tmp_config_id = 1544 ) and (@os_memory > 65536) and 
+		(@os_memory - @tmp_value ) < 6144
+			set @print_str=convert(char(60),@print_str) + @ISSUE +'Recommended Value is at least 6GB for OS memory'
+
+	if  (@tmp_config_id <> 1534 ) 	print @print_str
+	else
+	/* Server level user options - All should be off show what is on */ 
+	if  (@tmp_config_id = 1534 ) 
+		begin
+			declare @sop_setting varchar(10)
+			declare @ng_sop_setting varchar(10)
+			declare @spt_values TABLE -- replacement for master..spt_values
+			(name varchar(max)
+			, number int) 
+			insert into  @spt_values
+			values ('disable_def_cnst_check', 1) 
+			insert into  @spt_values
+			values ('implicit_transactions', 2) 
+			insert into  @spt_values
+			values ('cursor_close_on_commit', 4) 
+			insert into  @spt_values
+			values ('ansi_warnings', 8) 
+			insert into  @spt_values
+			values ('ansi_padding', 16) 
+			insert into  @spt_values
+			values ('ansi_nulls', 32) 
+			insert into  @spt_values
+			values ('arithabort', 64) 
+			insert into  @spt_values
+			values ('arithignore', 128) 
+			insert into  @spt_values
+			values ('quoted_identifier', 256) 
+			insert into  @spt_values
+			values ('nocount', 512) 
+			insert into  @spt_values
+			values ('ansi_null_dflt_on', 1024) 
+			insert into  @spt_values
+			values ('ansi_null_dflt_off', 2048) 
+			insert into  @spt_values
+			values ('concat_null_yields_null', 4096) 
+			insert into  @spt_values
+			values ('numeric_roundabort', 8192) 
+			insert into  @spt_values
+			values ('xact_abort', 16384) 
+			 
+			 
+			declare cur_svr_user_options  CURSOR FOR
+			select name,number 
+			from  @spt_values
+	
+			open cur_svr_user_options	
+
+			FETCH NEXT   FROM cur_svr_user_options INTO @tmp_option_name,@tmp_option_number
+			WHILE @@FETCH_STATUS = 0
+			BEGIN
+				select @ng_sop_setting = case (@tmp_ng_ok  & @tmp_option_number) when 0 THEN 'FALSE' else  'TRUE' end,
+				@sop_setting= case @tmp_value &  @tmp_option_number when 0 THEN 'FALSE'	 else 'TRUE' end
+
+				set @print_str=convert(char(50),@tmp_option_name)+@sop_setting
+				if @sop_setting <> @ng_sop_setting
+					set @print_str=convert(char(60),@print_str)+@ISSUE+'Recommended Value is '+@ng_sop_setting
+				
+				print @print_str
+
+
+				
+				FETCH NEXT   FROM cur_svr_user_options INTO @tmp_option_name,@tmp_option_number
+			END
+			CLOSE cur_svr_user_options
+			DEALLOCATE cur_svr_user_options
+		end 
+end
+
+FETCH NEXT FROM cur_sp_config
+	     INTO @tmp_config_id,@tmp_ng2000_ok, @tmp_ng2005_ok,@tmp_config_type,@tmp_value,@tmp_comment 
+
+END
+close cur_sp_config
+deallocate cur_sp_config
+drop table #ng_configure_ok
+
+/* Database Level configurations */
+declare @db_cmptlevel tinyint
+declare @db_recoverymodel varchar(15)
+declare @db_collation varchar(128)
+declare @db_parameter char(6)
+declare @db_pageverify varchar(20)
+declare @ng_pageverify varchar(20)
+declare @is_auto_shrink_on varchar(5)
+declare @is_auto_close_on varchar(5)
+declare @is_auto_create_statistics_on varchar(5)
+declare @is_auto_update_stats_on varchar(5)
+declare @is_auto_update_stats_async_on varchar(5)
+declare @is_ansi_null_default_on varchar(5)
+declare @is_ansi_padding_on varchar(5)
+declare @is_ansi_warnings_on varchar(5)
+declare @is_arithabort_on varchar(5)
+declare @is_concat_null_yields_null_on varchar(5)
+declare @is_numeric_roundabort_on varchar(5)
+declare @is_quoted_identifier_on varchar(5)
+declare @is_recursive_triggers_on varchar(5)
+declare @is_fulltext_enabled varchar(5)
+declare @is_db_chaining_on varchar(5)
+declare @is_master_key_encrypted_by_server varchar(5)
+declare @is_cursor_close_on_commit_on varchar(5)
+declare @is_local_cursor_default_on varchar(6)
+declare @is_cdc_enabled varchar(5) --  2008+
+declare @is_is_encrypted varchar(5) --  2008+
+DECLARE	@replica_id	char(36) -- 2012 Only
+DECLARE @group_database_id char(36) -- 2012 Only
+DECLARE @default_language_lcid VARCHAR(10)-- 2012 Only
+DECLARE @default_language_name nvarchar(256) -- 2012 Only
+DECLARE @default_fulltext_language_lcid VARCHAR(10) -- 2012 Only
+DECLARE @default_fulltext_language_name nvarchar(256) -- 2012 Only
+DECLARE @is_nested_triggers_on varchar(5) -- 2012 Only
+DECLARE @is_transform_noise_words_on varchar(5) -- 2012 Only
+DECLARE @two_digit_year_cutoff VARCHAR(5) -- 2012 Only
+DECLARE @containment VARCHAR(25) -- 2012 Only
+DECLARE @containment_desc nvarchar(120)  -- 2012 Only
+DECLARE @target_recovery_time_in_seconds VARCHAR(10) -- 2012 Only
+
+/* Database Configurations */
+SELECT @db_cmptlevel=compatibility_level
+, @db_recoverymodel = recovery_model_desc
+, @db_pageverify = page_verify_option_desc
+, @db_collation = collation_name
+, @db_parameter = case is_parameterization_forced when 0 THEN 'SIMPLE' else 'FORCED' end
+, @is_auto_create_statistics_on  = case is_auto_create_stats_on when 0 THEN 'FALSE' else  'TRUE' end
+, @is_auto_close_on  = case is_auto_close_on when 0 THEN 'FALSE' else  'TRUE' end
+, @is_auto_shrink_on  = case is_auto_shrink_on when 0 THEN 'FALSE' else  'TRUE' end
+, @is_auto_update_stats_async_on  = case is_auto_update_stats_async_on when 0 THEN 'FALSE' else  'TRUE' end
+, @is_auto_update_stats_on  = case is_auto_update_stats_on when 0 THEN 'FALSE' else  'TRUE' end
+, @is_ansi_null_default_on  = case is_ansi_null_default_on when 0 THEN 'FALSE' else  'TRUE' end
+, @is_ansi_padding_on  = case is_ansi_padding_on when 0 THEN 'FALSE' else  'TRUE' end
+, @is_ansi_warnings_on  = case is_ansi_warnings_on when 0 THEN 'FALSE' else  'TRUE' end
+, @is_arithabort_on  = case is_arithabort_on when 0 THEN 'FALSE' else  'TRUE' end
+, @is_concat_null_yields_null_on  = case is_concat_null_yields_null_on when 0 THEN 'FALSE' else  'TRUE' end
+, @is_numeric_roundabort_on  = case is_numeric_roundabort_on when 0 THEN 'FALSE' else  'TRUE' end
+, @is_quoted_identifier_on  = case is_quoted_identifier_on when 0 THEN 'FALSE' else  'TRUE' end
+, @is_recursive_triggers_on  = case is_recursive_triggers_on when 0 THEN 'FALSE' else  'TRUE' end
+, @is_db_chaining_on  = case is_db_chaining_on when 0 THEN 'FALSE' else  'TRUE' end
+, @is_fulltext_enabled  = case is_fulltext_enabled when 0 THEN 'FALSE' else  'TRUE' end
+, @is_master_key_encrypted_by_server  = case is_master_key_encrypted_by_server when 0 THEN 'FALSE' else  'TRUE' end
+, @is_cursor_close_on_commit_on  = case is_cursor_close_on_commit_on when 0 THEN 'FALSE' else  'TRUE' end
+, @is_local_cursor_default_on  = case is_local_cursor_default when 0 THEN 'GLOBAL' else  'LOCAL' end
+from sys.databases where database_id=@dbid
+
+
+--This is SQL Server 2008+
+if (@sql_is2008=1 or @sql_is2012 = 1 or @sql_is2014 = 1)
+	BEGIN
+		DECLARE @SQLString nvarchar(max)
+		DECLARE @ParmDefinition nvarchar(max);
+
+		SET @SQLString = N'SELECT  @is_cdc_enabled_out  = case is_cdc_enabled when 0 THEN ''FALSE'' else  ''TRUE'' end
+		, @is_is_encrypted_out  = case is_encrypted when 0 THEN ''FALSE'' else  ''TRUE'' end
+		from sys.databases where database_id=@dbid_in
+		'
+		SET @ParmDefinition = N'@dbid_in int, @is_cdc_enabled_out varchar(5) OUTPUT, @is_is_encrypted_out varchar(5) OUTPUT';
+		EXECUTE sp_executesql @SQLString, @ParmDefinition, @dbid_in = @dbid, @is_is_encrypted_out=@is_is_encrypted OUTPUT
+		,@is_cdc_enabled_out=@is_cdc_enabled OUTPUT ;
+
+	END	
+
+IF (@sql_is2012 = 1 OR @sql_is2014 = 1) 
+
+	BEGIN
+
+
+		DECLARE @SQLString2012 nvarchar(max);
+		DECLARE @ParmDefinition2012 nvarchar(max);
+
+		SET @SQLString2012 = 
+		N'SELECT @replica_id_out = CASE when replica_id IS NULL THEN ''FALSE''else CAST(replica_id AS varchar(36)) END
+		,@group_database_id_out = CASE when group_database_id IS NULL THEN ''FALSE'' else CAST(group_database_id AS varchar(36)) END
+		,@default_language_lcid_out = CASE when default_language_lcid IS NULL THEN ''FALSE'' else CAST(default_language_lcid AS varchar(10)) END
+		,@default_language_name_out = CASE when default_language_name IS NULL THEN ''FALSE'' else default_language_name END
+		,@default_fulltext_language_lcid_out = CASE when default_fulltext_language_lcid IS NULL THEN ''FALSE'' else CAST(default_fulltext_language_lcid AS varchar(10)) END
+		,@default_fulltext_language_name_out = CASE when default_fulltext_language_name IS NULL THEN ''FALSE'' else default_fulltext_language_name END
+		,@is_nested_triggers_on_out = CASE WHEN is_nested_triggers_on IS NULL THEN ''FALSE'' WHEN is_nested_triggers_on = 0 THEN ''FALSE'' ELSE ''TRUE'' END
+		,@is_transform_noise_words_on_out = CASE WHEN is_transform_noise_words_on IS NULL THEN ''FALSE'' WHEN is_transform_noise_words_on = 0 THEN ''FALSE'' ELSE ''TRUE'' END
+		,@two_digit_year_cutoff_out = CASE when two_digit_year_cutoff IS NULL THEN ''FALSE'' else CAST(two_digit_year_cutoff AS varchar(5)) END
+		,@containment_out = CASE WHEN containment = 1 THEN ''PARTIAL CONTAINMENT'' WHEN containment = 2 THEN  ''FULL CONTAINMENT'' ELSE ''FALSE'' END
+		,@containment_desc_out = containment_desc
+		,@target_recovery_time_in_seconds_out = CASE when target_recovery_time_in_seconds IS NULL THEN ''FALSE'' else CAST(target_recovery_time_in_seconds AS varchar(10)) END
+
+		from master.sys.databases where database_id=@dbid_in';
+
+
+		SET @ParmDefinition2012 = '@dbid_in int,@replica_id_out	char(36) OUTPUT, @group_database_id_out char(36) OUTPUT, @default_language_lcid_out VARCHAR(10)OUTPUT,
+		@default_language_name_out nvarchar(256) OUTPUT, @default_fulltext_language_lcid_out VARCHAR(10) OUTPUT, @default_fulltext_language_name_out nvarchar(256) OUTPUT,
+		@is_nested_triggers_on_out varchar(5) OUTPUT, @is_transform_noise_words_on_out varchar(5) OUTPUT, @two_digit_year_cutoff_out VARCHAR(5) OUTPUT,
+		@containment_out VARCHAR(25) OUTPUT, @containment_desc_out nvarchar(120)  OUTPUT, @target_recovery_time_in_seconds_out VARCHAR(10) OUTPUT';
+
+		EXECUTE sp_executesql 	@SQLString2012, @ParmDefinition2012, @dbid_in = @dbid, @replica_id_out = @replica_id OUTPUT, @group_database_id_out = @group_database_id OUTPUT,
+		@default_language_lcid_out = @default_language_lcid OUTPUT, @default_language_name_out = @default_language_name OUTPUT, 
+		@default_fulltext_language_lcid_out = @default_fulltext_language_lcid OUTPUT, @default_fulltext_language_name_out = @default_fulltext_language_name OUTPUT,
+		@is_nested_triggers_on_out = @is_nested_triggers_on OUTPUT, @is_transform_noise_words_on_out = @is_transform_noise_words_on OUTPUT,
+		@two_digit_year_cutoff_out = @two_digit_year_cutoff OUTPUT, @containment_out = @containment OUTPUT, @containment_desc_out = @containment_desc OUTPUT,
+		@target_recovery_time_in_seconds_out = @target_recovery_time_in_seconds OUTPUT;
+
+	END
+
+print ''
+
+set @print_str='DATABASE' 
+print @print_str
+print '--------'
+
+
+
+set @print_str='Database Compatibility Level: ' + convert(char(3),@db_cmptlevel)
+if @db_cmptlevel < 100     --((@sql_is2005 = 1) and (@db_cmptlevel <> 90)) or ((@sql_is2000 = 1) and(@db_cmptlevel <> 80)) or ((@sql_is2008 = 1) and(@db_cmptlevel <> 100) or ((@sql_is2012 = 1) and (@db_cmptlevel <> 110))or ((@sql_is2014 = 1) and (@db_cmptlevel <> 110)))
+Begin
+set @print_str=convert(char(60),@print_str) + @ISSUE +'Compatibility Level must be set to 100 (SQL SERVER 2008) or higher'
+End
+print @print_str
+
+set @print_str='Database Recovery Model: ' + @db_recoverymodel
+print @print_str
+
+set @print_str='Database Collation: ' + @db_collation
+if (@db_collation <> @sql_collation ) 
+set @print_str=convert(char(60),@print_str) + @ISSUE +'Collation does not match server '
+print @print_str 
+print ''
+
+  /*  DATABASE FILE SIZE AND DRIVESPACE INFORMATION  */
+PRINT ''
+PRINT 'Database File Information'
+PRINT '--------------------------'
+PRINT convert(CHAR(30), 'Name')+convert(CHAR(20), 'Size in GB') + convert(CHAR(750), 'Logical Path')
+
+INSERT INTO #tmplogspc
+EXEC ('dbcc sqlperf (logspace) WITH NO_INFOMSGS')
+
+INSERT INTO #dbinfo (
+       NAME
+       ,LOGICAL_PATH
+	    ,SIZE_IN_GB
+       )
+SELECT sysfilegroups.groupname,sysfiles.filename,sysfiles.size * CONVERT(FLOAT, 8) / CONVERT(FLOAT, 1048576) AS 'FILE SIZE IN GB'
+FROM sysfilegroups
+INNER JOIN sysfiles ON sysfiles.groupid = sysfilegroups.groupid
+
+UNION
+
+SELECT UPPER(sf.NAME),sf.filename,tmp.LogSize / CONVERT(FLOAT, 1048576) AS 'log in GB'
+FROM sysfiles sf
+CROSS JOIN #tmplogspc tmp
+WHERE groupid = 0
+AND dbname = @dbname
+
+DECLARE cur_fileinfo CURSOR FOR
+SELECT * FROM #dbinfo
+
+OPEN cur_fileinfo
+
+FETCH NEXT
+FROM cur_fileinfo
+INTO @tmp_filegroupname,@tmp_logical_path, @tmp_size
+
+WHILE @@FETCH_STATUS = 0
+BEGIN
+       PRINT  convert(CHAR(30), @tmp_filegroupname) +convert(CHAR(20), @tmp_size) +  convert(CHAR(750), @tmp_logical_path) 
+
+       FETCH NEXT
+       FROM cur_fileinfo
+       INTO @tmp_filegroupname,@tmp_logical_path,@tmp_size;
+END
+
+CLOSE cur_fileinfo;
+
+DEALLOCATE cur_fileinfo;
+
+---- get the drive space information ----
+INSERT INTO #tmp_drivespace (driveletter,freespace)
+EXEC ('xp_fixeddrives')
+PRINT ' '
+PRINT ' '
+PRINT 'Drive Space Information'
+PRINT '------------------------'
+PRINT convert(CHAR(7), 'Drive') + convert(CHAR(16), 'Free Space in GB')
+PRINT '-----  ----------------'
+
+DECLARE cur_drivespace CURSOR FOR
+SELECT * FROM #tmp_drivespace
+
+OPEN cur_drivespace
+
+FETCH NEXT
+FROM cur_drivespace
+INTO @driveletter,@freespace
+
+WHILE @@FETCH_STATUS = 0
+BEGIN
+       PRINT convert(CHAR(7), @driveletter) + convert(CHAR(12), @freespace / 1024)
+
+       FETCH NEXT
+       FROM cur_drivespace
+       INTO @driveletter,@freespace;
+END
+
+CLOSE cur_drivespace;
+
+DEALLOCATE cur_drivespace;
+
+
+---- Check for adequate drive space ----
+INSERT INTO #tmp_sizebydrive
+SELECT SUBSTRING(LOGICAL_PATH, 1, 1),SUM(SIZE_IN_GB) 
+FROM #dbinfo
+GROUP BY SUBSTRING(LOGICAL_PATH, 1, 1)
+
+INSERT INTO #tmp_adequate_drivespace (PATH_DRIVE_LETTER,SUM_OF_FILES,freespace)
+SELECT tmp1.PATH_DRIVE_LETTER,tmp1.SUM_OF_FILES,CONVERT(FLOAT, tmp2.freespace)
+FROM #tmp_sizebydrive tmp1
+JOIN #tmp_drivespace tmp2 ON tmp2.driveletter = tmp1.PATH_DRIVE_LETTER
+
+PRINT ''
+print 'Backup Free Space Check on DB Drives:'
+print '-------------------------------------'
+DECLARE cur_adequate_drivespace CURSOR FOR
+SELECT * FROM #tmp_adequate_drivespace
+
+OPEN cur_adequate_drivespace
+
+FETCH NEXT
+FROM cur_adequate_drivespace
+INTO @driveletter,@size_by_file,@freespace
+
+WHILE @@FETCH_STATUS = 0
+BEGIN
+       IF @freespace < 1.2 * @size_by_file
+              PRINT 'Caution, the ' + @driveletter + ' drive does not have the required space available.'
+       ELSE
+              PRINT 'The ' + @driveletter + ' drive has adequate space available.'
+
+       FETCH NEXT
+       FROM cur_adequate_drivespace
+       INTO @driveletter,@size_by_file,@freespace;
+END
+
+CLOSE cur_adequate_drivespace;
+DEALLOCATE cur_adequate_drivespace;
+/* Backups */  
+declare @db_backuptype varchar(15)  
+declare @db_startdt datetime   
+declare @db_enddt datetime   
+declare @db_backup_avail bit  
+  
+set @db_backup_avail = 0  
+Print ' '
+print ''  
+print 'Most Recent Backup Begin and End Time:'
+Print '--------------------------------------'  
+    
+ declare cur_last_backup  CURSOR FOR  
+ select 'backup_type'=case type when 'D' then 'FULL' when 'L' then 'TRANSACTION' when 'I' then 'DIFFERENTIAL' else 'ERROR' end  
+ , backup_start_date=max(backup_start_date)  
+ ,  backup_finish_date=max(backup_finish_date)   
+ from  msdb.dbo.backupset  
+ where database_name = COALESCE(@dbname,database_name)  
+ group by type  
+     
+ open  cur_last_backup   
+  
+   FETCH NEXT   FROM  cur_last_backup  INTO @db_backuptype,@db_startdt,@db_enddt  
+  
+   WHILE @@FETCH_STATUS = 0  
+   BEGIN  
+     
+   set @db_backup_avail = 1  
+  
+   set @print_str=@db_backuptype  
+     
+  
+   if (dateadd(hh,-48,getdate()) > @db_enddt)  
+     set @print_str= convert(char(60),@print_str)+@ISSUE+'Backup has not run in 48 hours'  
+  
+   print @print_str  
+   print convert(char(13),'Start Time: ')+convert(varchar(26),@db_startdt,109)   
+   print convert(char(13),'End Time: ')+convert(varchar(26),@db_enddt,109)  
+  
+   FETCH NEXT   FROM  cur_last_backup  INTO @db_backuptype,@db_startdt,@db_enddt  
+   END  
+  
+   if (@db_backup_avail = 0)  
+       print convert(char(60),'No Database Backup History available for this database')+@ISSUE  
+     
+   CLOSE cur_last_backup   
+   DEALLOCATE cur_last_backup
+   
+-------------
+print ''  
+PRINT ' '
+print 'Average Backup Time in Hours:'
+Print '-----------------------------'   
+
+select 
+@avgBackUpTime = AVG(DATEDIFF(mi, backup_start_date,backup_finish_date))
+from  msdb.dbo.backupset  
+ where database_name = @dbname  
+and  type= 'D'  
+
+set @avgBackUpTimeHours=@avgBackUpTime/60  --change minutes to hours
+
+
+PRINT @avgBackUpTimeHours
+PRINT ' '   
+
+
+Print ''
+
+/* Status of All Jobs */
+print ''
+print 'STATUS OF ALL JOBS:'
+PRINT '-------------------'
+			
+declare @job_name varchar(50)
+declare @job_desc varchar(80)
+declare @job_enabled varchar(10)
+DECLARE allJobs CURSOR FOR
+	select distinct name, description, case when enabled = 1 then 'ENABLED' else 'Disabled' END as 'Job Status'
+FROM   msdb.dbo.sysjobs s, msdb.dbo.sysjobsteps j
+where j.database_name = db_name()  
+    and s.job_id = j.job_id
+order by name,description
+
+	OPEN allJobs
+	FETCH NEXT FROM allJobs  INTO @job_name, @job_desc, @job_enabled 
+
+	if @@FETCH_STATUS = 0
+		BEGIN
+			print 'These are all the jobs listed for the SQL Server.'
+			print 'Make sure any jobs for your database have been disabled before you start the upgrade.' 
+			print ''
+			print convert(char(50),'Job Name') + convert(char(51),'Description') + convert(char(10),'Job Status')
+			print '------------------------------------------------  -------------------------------------------------  ----------'
+	
+		END
+	ELSE
+		print 'No jobs found'
+	-- Begin loop 
+	WHILE @@FETCH_STATUS = 0
+	BEGIN
+		print convert(char(50),@job_name) + ' ' + convert(char(50),@job_desc) + ' ' + convert(char(10),@job_enabled)
+				
+		FETCH NEXT FROM allJobs  INTO @job_name, @job_desc, @job_enabled 
+
+	END	-- 
+
+	CLOSE allJobs
+	DEALLOCATE allJobs 
+Print ' '
+Print ' '
+
+Print '-------------------------------------------------------'
+Print '-------------------------------------------------------'
+Print '---                KBM Related Results              ---'
+Print '-------------------------------------------------------'
+Print '-------------------------------------------------------'
+------------------------
+
+
+print ' '
+--CRIS, BH, CG Check
+declare @CG_Version varchar(100)
+declare @BH_Version varchar(100)
+declare @CRIS_Version varchar(100)
+declare @OPH_Version varchar(100)
+
+
+SELECT top 1 @BH_Version=btu_version
+FROM btu_version
+where btu_version in ('8.4.3.735','8.4.3.744','8.4.3.761','8.4.3.776','8.4.4.718','8.4.4.726','8.4.4.734''8.4.4.743','8.4.3.790','8.4.3.7006','8.4.3.7014','8.4.3.7024','8.4.3.7041','8.4.3.7063','8.4.3.7081','8.4.3.7146','8.4.3.7191','8.4.3.7249','8.4.3.7264','8.4.3.7342','8.4.3.7348','8.4.3.7359','8.4.3.7377','8.4.3.7394','8.4.3.7403','8.4.3.7414','8.4.3.7426','8.4.3.7429','8.4.3.7431','8.4.3.7432','8.4.3.7441','8.4.3.7633','8.4.3.7646','8.4.4.7657','8.4.3.7661','8.4.3.7517','8.4.3.7518','8.4.4.7514') or description like '%Behavioral Health Suite%'
+order by create_timestamp desc
+
+SELECT top 1 @OPH_Version=btu_version
+FROM btu_version
+WHERE btu_version like '88.0.1.0'  or btu_version like '8.4.3.815' or btu_version like '8.4.3.850' or btu_version like '88.0.4.9' or BTU_VERSION like '88.0.5.39' or BTU_VERSION like '88.0.6.59' or BTU_VERSION like '88.0.7.48' or BTU_VERSION like '88.0.7.52' or description like '%Ophthalmic Suite%'
+order by create_timestamp desc
+
+
+
+select top 1  @CRIS_Version=btu_version
+from btu_version
+where btu_version like '8.3.10.6%'
+
+Print 'Care Guidelines Install Status:'
+Print '-------------------------------'
+IF EXISTS (select * from sysobjects where name = 'BTU_Version' and xtype = 'u') 
+Begin
+If exists (select top 1 * from btu_version where btu_version like '8.4.4.5%' or btu_version like '8.3.10.5%' or btu_version like '8.4.0.5%' or btu_version like '8.4.1.5%' or btu_version like '8.4.2.5%' or btu_version like '8.4.3.5%')
+print
+'Care Guidelines is installed' 
+--'Care Guidelines is installed' 
+else
+print
+'Care Guidelines is NOT installed'
+Print ' '
+END
+Else
+Print 'No BTU_Version table is present...Care Guidelines is not installed'
+Print ' '
+Print ' '
+Print 'Behavioral Health Install Status:'
+Print '-------------------------------'
+IF EXISTS (select * from sysobjects where name = 'BTU_Version' and xtype = 'u') 
+Begin
+If exists (select top 1 * from btu_version where btu_version in ('8.4.3.735','8.4.3.744','8.4.3.761','8.4.3.776','8.4.4.718','8.4.4.726','8.4.4.734''8.4.4.743','8.4.3.790','8.4.3.7006','8.4.3.7014','8.4.3.7024','8.4.3.7041','8.4.3.7063','8.4.3.7081','8.4.3.7146','8.4.3.7191','8.4.3.7249','8.4.3.7264','8.4.3.7342','8.4.3.7348','8.4.3.7359','8.4.3.7377','8.4.3.7394','8.4.3.7403','8.4.3.7414','8.4.3.7426','8.4.3.7429','8.4.3.7431','8.4.3.7432','8.4.3.7441','8.4.3.7633','8.4.3.7646','8.4.4.7657','8.4.3.7661','8.4.3.7517','8.4.3.7518','8.4.4.7514', '8.4.5.7578') or description like '%Behavioral Health Suite%')
+print 
+'Behavioral Health version ' + @BH_Version+ ' is installed' 
+--'Behavioral Health is installed' 
+else
+print
+'Behavioral Health is NOT installed'
+Print ' '
+END
+Else
+Print 'No BTU_Version table is present...Behavioral Health is not installed'
+Print ' '
+Print ' '
+Print 'CRIS Install Status:'
+Print '--------------------'
+IF OBJECT_ID('ngkbm_coded_result_mapping') IS NOT NULL
+print
+'CRIS is installed'
+else
+print
+'CRIS is NOT installed'
+print ' '
+print ' '
+Print 'OPH Install Status:'
+Print '-------------------'
+IF EXISTS (select * from sysobjects where name = 'BTU_Version' and xtype = 'u') 
+Begin
+If exists (select top 1 * from btu_version where btu_version like '88.0.1.0'  or btu_version like '8.4.3.815' or btu_version like '8.4.3.850' or btu_version like '88.0.4.9'  or BTU_VERSION like '88.0.7.48' or BTU_VERSION like '88.0.7.52' or description like '%Ophthalmic Suite%')
+print
+'OPH Package Version ' + @OPH_Version+ ' Is Installed' 
+--'Behavioral Health is installed' 
+else
+print
+'OPH is NOT installed'
+Print ' '
+END
+Else
+Print 'No BTU_Version table is present...OPH is not installed'
+Print ' '
+Print ' '
+Print 'Ophthalmology Workflow Check'
+Print '----------------------------'
+if exists(SELECT top 1 * From template_audit WHERE create_timestamp > DATEADD(year,-1,GETDATE()) and template_id = @OPHTempID) 
+Print 'Client Uses OPH Templates'
+else
+Print 'Client does NOT use OPH Templates'
+Print ' '
+Print ' '
+Print 'Optical Management Check:'
+Print '-------------------------'
+Declare @OpticalMgmt INT
+Select @OpticalMgmt = Count(product_id) from license_mstr where product_id like 'OPTIK%'
+If @OpticalMgmt > 0
+Print 'Optical Management Is Installed'
+else 
+Print 'Optical Management Is Not Installed'
+Print ' '
+Begin
+Print 'Optik Job Check:'
+Print '---------------'
+DECLARE @jobId binary(16);
+SELECT @jobId = job_id FROM msdb.dbo.sysjobs WHERE (name = N'KI189234_SP_Execution')
+IF (@jobId IS NOT NULL)
+Print 'You May Need To Remove The Job KI189234_SP_Execution'
+else
+Print 'KI189234_SP_Execution not found.'
+Print ' '
+End
+IF EXISTS (SELECT 1 from INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'np_pensystempreferences')
+ BEGIN
+ Print 'NextPen Version Check:'
+ Print '----------------------'
+  Declare @nextpenversion varchar(4);
+  SELECT @nextpenversion = value FROM np_pensystempreferences WHERE name = 'NextPenVersion';
+  if (@nextpenversion IS NOT NULL)
+  Print 'Version ' + @nextpenversion 
+  END
+ else
+ Begin
+ if @nextpenversion = NULL
+ Print 'NextPen Version Check:'
+ Print '----------------------'
+ Print 'No NextPen Installation Found'
+ End
+ Print ' '
+ Print ' '
+ Print 'Express Engine / Automated Document Sharing Install Check:'
+ Print '-----------------------------------------------------------'
+ If exists (select * from information_schema.tables where table_name = 'ncs_pb_prefs')
+ Begin
+ Print 'Express Engine/Automated Document Sharing Is Installed'
+ End
+ Else
+ Begin
+ Print 'Express Engine/Automated Document Sharing Is NOT Installed'
+ END
+
+ 
+
+
+
+Print ''
+Print 'Top 10 Encounter Timestamps'
+Print '---------------------------'
+
+select top 10 cast(create_timestamp as date) Date, ' ', count(*) as 'Number Of Encounters' from patient_encounter
+group by cast(create_timestamp as date)
+order by Date desc
+
+Print ' '
+Print 'Top 15 number of version labels per KBM Version:'
+Print '------------------------------------------------'
+-- This is code KBM version label information
+	declare @KBM_version varchar(20)
+	declare @KBM_count int
+	declare @KBM_timestamp datetime
+	
+
+	DECLARE curKBM CURSOR FOR
+		SELECT  top 15 default_value, count(*), max(create_timestamp)
+		FROM template_fields with (nolock)
+		WHERE field_type = 'label'
+		AND  field_name = 'version_label'
+		GROUP BY default_value
+		ORDER BY count(*) DESC
+	
+		OPEN curKBM 
+		FETCH NEXT FROM curKBM  INTO @KBM_version,@KBM_count,@KBM_timestamp 
+
+		if @@FETCH_STATUS = 0
+		BEGIN
+			print ''
+			print convert(char(20),'KBM VERSION')+convert(char(12),'COUNT')+convert(char(26),'TIMESTAMP')
+			print '-----------         -----       -------------------'
+
+		END
+		-- Begin loop KBM versions
+		WHILE @@FETCH_STATUS = 0
+		BEGIN
+			set @print_str = ISNULL(convert(char(20),@KBM_version),'')+ISNULL(convert(char(12),@KBM_count),'')+ISNULL(convert(char(26),@KBM_timestamp),'')
+			print @print_str
+				
+			FETCH NEXT FROM curKBM  INTO @KBM_version,@KBM_count,@KBM_timestamp 
+
+		END	-- 
+
+		CLOSE curKBM 
+		DEALLOCATE curKBM 
+
+
+			
+
+
+			
+ 
+print ''
+
+
+
+drop table #msver
+
+
+IF  EXISTS ( SELECT name FROM sysobjects WHERE name = 'spdbdes' AND xtype = 'u' )
+	drop table spdbdes
+IF  EXISTS ( SELECT name FROM sysobjects WHERE name = 'spdbdesc' AND xtype = 'u' )
+	drop table  spdbdesc
+
+
+print ''
+print 'Trigger status:'
+print '---------------'
+declare @trigger_name varchar(50)
+declare @trigger_is_disabled varchar(3)
+declare @table_name varchar(50)
+	
+
+DECLARE curTriggers CURSOR FOR
+	SELECT DISTINCT o.name, t.name AS trigger_name, CASE WHEN t.is_disabled = 0 THEN 'YES' ELSE 'NO' END enabled
+	FROM sys.objects o WITH(nolock) INNER JOIN sys.triggers t ON t.parent_id = o.object_id 
+	INNER JOIN sys.syscomments c ON c.id = t.object_id
+	where t.is_disabled = 1
+	ORDER BY  t.name ASC, enabled ASC
+	
+	OPEN curTriggers 
+	FETCH NEXT FROM curTriggers  INTO @table_name,@trigger_name,@trigger_is_disabled 
+	if @@FETCH_STATUS = 0
+	BEGIN
+		print ''
+		print convert(char(50),'Table Name')+convert(char(50),'Trigger Name')+convert(char(50),'Enabled')
+		print '---------------------------------------------     ---------------------------------------------     -------'
+
+	END
+	 else print 'All Triggers Are Enabled.'
+	-- Begin loop KBM versions
+	WHILE @@FETCH_STATUS = 0
+	BEGIN
+		
+		set @print_str = ISNULL(convert(char(50),@table_name),'')+ISNULL(convert(char(50),@trigger_name),'')+ISNULL(convert(char(26),@trigger_is_disabled),'')
+		print @print_str
+				
+		FETCH NEXT FROM curTriggers  INTO @table_name,@trigger_name,@trigger_is_disabled 
+		
+
+	END	--
+	
+
+
+	CLOSE curTriggers 
+	DEALLOCATE curTriggers 
+
+
+
+
+SET NOCOUNT OFF
+	
+GO
+
+
+print ' '
+print ''
+
+
+Print ' '
+Print ' '
+print '----------------------------------------------------------------------'
+print '---                  ** KBM Portion Completed **                   ---'
+print '----------------------------------------------------------------------'
+DECLARE @last_med_success_date DATETIME
+DECLARE @Med_version VARCHAR(20)
+DECLARE @Med_install_date DATETIME
+DECLARE @Med_status VARCHAR(30)
+DECLARE @last_form_success_date DATETIME
+DECLARE @form_version VARCHAR(20)
+DECLARE @form_install_date DATETIME
+DECLARE @form_status VARCHAR(30)
+DECLARE @PRINT_str VARCHAR(MAX)
+DECLARE @productname VARCHAR(25)
+DECLARE @field1 as varchar(100)
+DECLARE @field2 as varchar(100)
+DECLARE @field3 as varchar(100)
+DECLARE @details VARCHAR(75)
+CREATE TABLE #tmp_ng_products (
+	ProductName VARCHAR(25)
+	,Details VARCHAR(75)
+	)
+Print ' '
+Print ' '
+Print '-------------------------------------------------------'
+Print '-------------------------------------------------------'
+Print '             Core Upgrade Related Results              '
+Print '-------------------------------------------------------'
+Print '-------------------------------------------------------'
+SET NOCOUNT ON
+PRINT ''
+PRINT 'DEFAULT DIAGNOSIS LIBRARY PER PRACTICE:'
+PRINT '---------------------------------------'
+--default diagnosis library per practice
+SELECT pm.practice_id as 'Practice ID', p.practice_name as 'Practice Name', lm.description as 'Description', 'Y' default_library 
+	FROM practice_misc pm INNER JOIN library_mstr lm ON pm.diagnosis_code_lib_id = lm.library_id
+						  INNER JOIN practice p ON pm.practice_id = p.practice_id							
+	WHERE lm.library_type = 'DG' and lm.delete_ind <> 'Y'
+	print ' '
+	print ' '
+--CDL - Clinical Data Loader version
+SELECT mus.update_version as 'CDL Package Date', mus.install_date as 'Installed Date', 
+musd.status_description as 'Status'
+FROM med_update_status mus
+JOIN med_update_statuses musd ON mus.update_status = musd.update_status
+--WHERE (RIGHT(mus.update_version, 2) = '-C' OR RIGHT(mus.update_version, 4) LIKE '-Cv[0-9]' OR  RIGHT(mus.update_version, 4) LIKE 'C_V[0-9]')
+where mus.update_version like '%C%'
+ORDER BY 2 DESC
+ print ' '
+ print ' '
+ ---------------------
+---------------------
+--Medication Module Load
+ DECLARE @med_load_date TABLE (
+	id INT identity(1, 1)
+	,update_version VARCHAR(20)
+	,install_date DATETIME
+	,status_description VARCHAR(30)
+	)
+
+-- get the last successful one
+INSERT INTO @med_load_date (
+	update_version
+	,install_date
+	,status_description
+	)
+SELECT TOP 1 m1.update_version
+	,m1.install_date
+	,m2.status_description
+FROM med_update_status m1
+	,med_update_statuses m2
+WHERE m1.update_status = m2.update_status
+	AND isnumeric(m1.update_version) = 1
+	AND m1.update_status = 9
+ORDER BY m1.install_date DESC
+
+SELECT @last_med_success_date = install_date
+FROM @med_load_date
+
+-- get all that have failed since the successful one
+INSERT INTO @med_load_date (
+	update_version
+	,install_date
+	,status_description
+	)
+SELECT m1.update_version
+	,m1.install_date
+	,m2.status_description
+FROM med_update_status m1
+	,med_update_statuses m2
+WHERE m1.update_status = m2.update_status
+	AND isnumeric(m1.update_version) = 1
+	AND m1.update_status <> 9
+	AND isnull(@last_med_success_date, 0) < m1.install_date
+ORDER BY m1.install_date DESC
+
+DECLARE curMedLoad CURSOR
+FOR
+SELECT update_version
+	,install_date
+	,status_description
+FROM @med_load_date
+ORDER BY id
+
+OPEN curMedLoad
+
+FETCH NEXT
+FROM curMedLoad
+INTO @Med_version
+	,@Med_install_date
+	,@Med_status
+
+IF @@FETCH_STATUS = 0
+BEGIN
+	PRINT ''
+	PRINT convert(CHAR(25), 'Medication Load Version') + convert(CHAR(26), 'Install Date') + convert(CHAR(30), 'Status')
+	PRINT '----------------------   ------------              ---------'
+END
+
+-- Begin loop KBM versions
+WHILE @@FETCH_STATUS = 0
+BEGIN
+	SET @print_str = convert(CHAR(25), @Med_version) + convert(CHAR(26), @Med_install_date) + convert(CHAR(30), @Med_status)
+
+	PRINT @print_str
+
+	FETCH NEXT
+	FROM curMedLoad
+	INTO @Med_version
+		,@Med_install_date
+		,@Med_status
+END -- 
+
+CLOSE curMedLoad
+
+DEALLOCATE curMedLoad
+Print ' '
+/*  PRINT FORMULARY INFO  */
+--Formulary Load
+PRINT ''
+
+DECLARE @form_load_date TABLE (
+	id INT identity(1, 1)
+	,update_version VARCHAR(20)
+	,install_date DATETIME
+	,status_description VARCHAR(30)
+	)
+
+-- get the last successful one (F in the version)
+INSERT INTO @form_load_date (
+	update_version
+	,install_date
+	,status_description
+	)
+SELECT TOP 1 m1.update_version
+	,m1.install_date
+	,m2.status_description
+FROM med_update_status m1
+	,med_update_statuses m2
+WHERE m1.update_status = m2.update_status
+	AND isnumeric(m1.update_version) = 0
+	AND CHARINDEX('F', update_version, 1) > 0
+	AND m1.update_status = 9
+ORDER BY m1.install_date DESC
+
+SELECT @last_form_success_date = install_date
+FROM @form_load_date
+
+-- get all that have failed since the successful one
+INSERT INTO @form_load_date (
+	update_version
+	,install_date
+	,status_description
+	)
+SELECT m1.update_version
+	,m1.install_date
+	,m2.status_description
+FROM med_update_status m1
+	,med_update_statuses m2
+WHERE m1.update_status = m2.update_status
+	AND isnumeric(m1.update_version) = 0
+	AND CHARINDEX('F', update_version, 1) > 0
+	AND m1.update_status <> 9
+	AND isnull(@last_form_success_date, 0) < m1.install_date
+ORDER BY m1.install_date DESC
+
+DECLARE curFormLoad CURSOR
+FOR
+SELECT update_version
+	,install_date
+	,status_description
+FROM @form_load_date
+ORDER BY id
+
+OPEN curFormLoad
+
+FETCH NEXT
+FROM curFormLoad
+INTO @Form_version
+	,@Form_install_date
+	,@Form_status
+
+IF @@FETCH_STATUS = 0
+BEGIN
+	PRINT ''
+	PRINT convert(CHAR(25), 'Formulary Load Version') + convert(CHAR(26), 'Install Date') + convert(CHAR(30), 'Status')
+	PRINT '----------------------   ------------              ---------'
+END
+
+-- 
+WHILE @@FETCH_STATUS = 0
+BEGIN
+	SET @print_str = convert(CHAR(25), @form_version) + convert(CHAR(26), @form_install_date) + convert(CHAR(30), @form_status)
+
+	PRINT @print_str
+
+	FETCH NEXT
+	FROM curFormLoad
+	INTO @Form_version
+		,@Form_install_date
+		,@Form_status
+END -- 
+
+CLOSE curFormLoad
+
+DEALLOCATE curFormLoad
+print ' '
+print ' '
+SELECT top 1 mus.update_version as 'Surescripts Formulary Version:'
+		  ,mus.install_date as 'Installed Date:'
+		  ,musd.status_description as 'Status:'
+FROM med_update_status mus
+JOIN med_update_statuses musd 
+	ON mus.update_status = musd.update_status
+WHERE RIGHT(mus.update_version, 2) = '-F'
+ORDER BY 2 DESC; 
+--RIPGM
+declare @dbname varchar(250) = DB_NAME();
+If @dbname LIKE '%Prod%'
+Begin
+PRINT ''
+PRINT '---------------------------------------------------------------------'
+PRINT '---              Nextgen Product Installation Status              ---'
+PRINT '---------------------------------------------------------------------'
+
+
+PRINT ''
+PRINT convert(CHAR(25), 'Product Name') + convert(CHAR(75), 'Details')
+Print '------------             -------'
+
+--begin inserts into temp table
+IF (
+		SELECT ng_ifx_service_url
+		FROM sys_info(NOLOCK)
+		) IS NULL
+	INSERT INTO #tmp_ng_products
+	VALUES (
+		'Advanced Audit'
+		,'Advanced Audit is not installed'
+		)
+
+IF (
+		SELECT count(*)
+		FROM audit_queues(NOLOCK)
+		) <> 0
+	INSERT INTO #tmp_ng_products
+	VALUES (
+		'Advanced Audit'
+		,'Advanced Audit settings exist in this environment'
+		)
+
+IF (
+		SELECT count(*)
+		FROM version(NOLOCK)
+		WHERE description LIKE '%Dashboard%'
+		) = 0
+	INSERT INTO #tmp_ng_products
+	VALUES (
+		'Dashboard'
+		,'NextGen Dashboard is not installed'
+		)
+
+IF (
+		SELECT count(*)
+		FROM version(NOLOCK)
+		WHERE description LIKE '%Dashboard%'
+		) <> 0
+	INSERT INTO #tmp_ng_products
+	VALUES (
+		'Dashboard'
+		,'NextGen Dashboard settings exist in this environment'
+		)
+
+IF (
+		SELECT count(*)
+		FROM configuration_options(NOLOCK)
+		WHERE app_name LIKE '%eprescribing%'
+		) = 0
+	INSERT INTO #tmp_ng_products
+	VALUES (
+		'ePrescribing'
+		,'ePrescribing is not installed'
+		)
+
+IF (
+		SELECT count(*)
+		FROM configuration_options(NOLOCK)
+		WHERE app_name LIKE '%eprescribing%'
+		) >= 1
+	INSERT INTO #tmp_ng_products
+	VALUES (
+		'ePrescribing'
+		,'ePrescribing is present in this environment'
+		)
+
+IF (
+		SELECT count(*)
+		FROM information_schema.tables(NOLOCK)
+		WHERE table_name = 'chs_site_info'
+		) = 0
+	INSERT INTO #tmp_ng_products
+	VALUES (
+		'HIE'
+		,'NextGen HIE is not installed'
+		)
+
+IF (
+		SELECT count(*)
+		FROM information_schema.tables(NOLOCK)
+		WHERE table_name = 'chs_site_info'
+		) = 1
+	INSERT INTO #tmp_ng_products
+	VALUES (
+		'HIE'
+		,'NextGen HIE is present in this environment'
+		)
+
+IF (
+		SELECT count(*)
+		FROM version(NOLOCK)
+		WHERE description = '%Med Nec Data Update%'
+		) = 0
+	INSERT INTO #tmp_ng_products
+	VALUES (
+		'Medical Necessity'
+		,'Medical Necessity is not installed'
+		)
+
+IF (
+		SELECT count(*)
+		FROM version(NOLOCK)
+		WHERE description LIKE '%Med Nec Data Update%'
+		) <> 0
+	INSERT INTO #tmp_ng_products
+	VALUES (
+		'Medical Necessity'
+		,'Medical Necessity settings exist in this environment'
+		)
+
+IF (
+		SELECT count(*)
+		FROM configuration_options(NOLOCK)
+		WHERE app_name = 'Mobile'
+		) = 0
+	INSERT INTO #tmp_ng_products
+	VALUES (
+		'Mobile'
+		,'NextGen Mobile is not installed'
+		)
+
+IF (
+		SELECT count(*)
+		FROM configuration_options(NOLOCK)
+		WHERE app_name = 'Mobile'
+		) <> 0
+	INSERT INTO #tmp_ng_products
+	VALUES (
+		'Mobile'
+		,'NextGen Mobile settings exist in this environment'
+		)
+
+IF (
+		SELECT count(*)
+		FROM configuration_options(NOLOCK)
+		WHERE app_name IN (
+				'APPOINTMENT SYNCHRONIZATION'
+				,'ARCHIVE SETTINGS'
+				,'AUTO UPDATE PROCESSOR'
+				,'AUTOMATED PHARMACY DOWNLOAD'
+				,'EPRESCRIBING MAIL-ORDER ACTIVITY FILE PROCESSOR'
+				,'EPRESCRIBING MAIL-ORDER MESSAGE PROCESSOR'
+				,'EPRESCRIBING MAIL-ORDER PROVIDER SYNCHRONIZATION'
+				,'EPRESCRIBING RETAIL ESCALATION'
+				,'EPRESCRIBING RETAIL EXPORT'
+				,'EPRESCRIBING RETAIL IMPORT'
+				,'EPRESCRIBING RETAIL PHARMACY DOWNLOAD'
+				,'EXPORT MESSAGE PROCESSOR'
+				,'GENERATING CCD FOR GUIDELINE PROCESSOR'
+				,'GETTING PENDING APPTS INFO FOR CLINICAL GUIDELINE PROCESSOR'
+				,'HEART BEAT PROCESSOR'
+				,'IMPORT MESSAGE PROCESSOR'
+				,'PAQ DOCUMENTS EXPORT PROCESSOR'
+				,'PATIENT MERGE RECONCILIATION'
+				,'PATIENT PORTAL API REAL-TIME SSO ENROLLMENT FORWARDING SERVICE'
+				,'PATIENT PORTAL AUTO ENROLLMENT PROCESSOR'
+				,'PATIENT PORTAL SSO BULK ENROLLMENT PROCESSOR'
+				,'PATIENT RECALLS PROCESSOR'
+				,'PDR PRODUCT LISTING IMPORT'
+				,'PHR BACK FILL'
+				,'PHR PARTIAL LOAD'
+				,'PHR REQUESTS'
+				,'REAL TIME APPOINTMENTS FORWARDING'
+				,'RECURRING TEMPLATE PROCESSOR'
+				,'SCHEDULED MESSAGE PROCESSOR'
+				,'STATEMENT GENERATION'
+				,'SYNCHRONIZE MASTER FILES'
+				,'SYNCHRONIZE MED ASSIGNMENTS PROCESSOR'
+				,'SYNCHRONIZE MED DEFINITIONS PROCESSOR'
+				,'SYNCHRONIZE PHARMACIES PROCESSOR'
+				,'SYNCHRONIZE PROVIDERS PROCESSOR'
+				)
+		) <> 0
+	INSERT INTO #tmp_ng_products
+	VALUES (
+		'NextMD Patient Portal'
+		,'NextMD Patient Portal settings exist in this environment.'
+		)
+
+IF (
+
+
+		SELECT count(*)
+		FROM configuration_options(NOLOCK)
+		WHERE app_name IN (
+				'APPOINTMENT SYNCHRONIZATION'
+				,'ARCHIVE SETTINGS'
+				,'AUTO UPDATE PROCESSOR'
+				,'AUTOMATED PHARMACY DOWNLOAD'
+				,'EPRESCRIBING MAIL-ORDER ACTIVITY FILE PROCESSOR'
+				,'EPRESCRIBING MAIL-ORDER MESSAGE PROCESSOR'
+				,'EPRESCRIBING MAIL-ORDER PROVIDER SYNCHRONIZATION'
+				,'EPRESCRIBING RETAIL ESCALATION'
+				,'EPRESCRIBING RETAIL EXPORT'
+				,'EPRESCRIBING RETAIL IMPORT'
+				,'EPRESCRIBING RETAIL PHARMACY DOWNLOAD'
+				,'EXPORT MESSAGE PROCESSOR'
+				,'GENERATING CCD FOR GUIDELINE PROCESSOR'
+				,'GETTING PENDING APPTS INFO FOR CLINICAL GUIDELINE PROCESSOR'
+				,'HEART BEAT PROCESSOR'
+				,'IMPORT MESSAGE PROCESSOR'
+				,'PAQ DOCUMENTS EXPORT PROCESSOR'
+				,'PATIENT MERGE RECONCILIATION'
+				,'PATIENT PORTAL API REAL-TIME SSO ENROLLMENT FORWARDING SERVICE'
+				,'PATIENT PORTAL AUTO ENROLLMENT PROCESSOR'
+				,'PATIENT PORTAL SSO BULK ENROLLMENT PROCESSOR'
+				,'PATIENT RECALLS PROCESSOR'
+				,'PDR PRODUCT LISTING IMPORT'
+				,'PHR BACK FILL'
+				,'PHR PARTIAL LOAD'
+				,'PHR REQUESTS'
+				,'REAL TIME APPOINTMENTS FORWARDING'
+				,'RECURRING TEMPLATE PROCESSOR'
+				,'SCHEDULED MESSAGE PROCESSOR'
+				,'STATEMENT GENERATION'
+				,'SYNCHRONIZE MASTER FILES'
+				,'SYNCHRONIZE MED ASSIGNMENTS PROCESSOR'
+				,'SYNCHRONIZE MED DEFINITIONS PROCESSOR'
+				,'SYNCHRONIZE PHARMACIES PROCESSOR'
+				,'SYNCHRONIZE PROVIDERS PROCESSOR'
+				)
+		) = 0
+	INSERT INTO #tmp_ng_products
+	VALUES (
+		'NextMD Patient Portal'
+		,'NextMD Patient Portal is not installed.'
+		)
+
+IF (
+		SELECT count(*)
+		FROM version
+		WHERE product_id = 'HWPE'
+		) > 0
+	AND (
+		SELECT count(*)
+		FROM license_detail
+		WHERE product_id = 'HWPI'
+		) > 0
+	INSERT INTO #tmp_ng_products
+	VALUES (
+		'Patient Education'
+		,'Patient Education is installed'
+		)
+
+IF (
+		SELECT count(*)
+		FROM version
+		WHERE product_id = 'HWPE'
+		) = 0
+	OR (
+		SELECT count(*)
+		FROM license_detail
+		WHERE product_id = 'HWPI'
+		) = 0
+	INSERT INTO #tmp_ng_products
+	VALUES (
+		'Patient Education'
+		,'Patient Education is not installed'
+		)
+
+IF (
+		SELECT count(*)
+		FROM intrf_interface_ids(NOLOCK)
+		) = 0
+	INSERT INTO #tmp_ng_products
+	VALUES (
+		'Rosetta'
+		,'Rosetta is not installed.'
+		)
+
+IF (
+		SELECT count(*)
+		FROM intrf_interface_ids(NOLOCK)
+		) <> 0
+	INSERT INTO #tmp_ng_products
+	VALUES (
+		'Rosetta'
+		,'Rosetta settings exist in this environment.'
+		)
+
+IF (
+		SELECT count(*)
+		FROM configuration_options(NOLOCK)
+		WHERE app_name = 'NGSHARE'
+		) = 0
+	INSERT INTO #tmp_ng_products
+	VALUES (
+		'Share'
+		,'NextGen Share is not installed'
+		)
+
+IF (
+		SELECT count(*)
+		FROM configuration_options(NOLOCK)
+		WHERE app_name = 'NGSHARE'
+		) <> 0
+	INSERT INTO #tmp_ng_products
+	VALUES (
+		'Share'
+		,'NextGen Share is present in this environment'
+		)
+
+DECLARE cur_productinfo CURSOR
+FOR
+SELECT *
+FROM #tmp_ng_products
+
+OPEN cur_productinfo
+
+FETCH NEXT
+FROM cur_productinfo
+INTO @productname
+	,@details
+
+WHILE @@FETCH_STATUS = 0
+BEGIN
+	PRINT convert(CHAR(25), @productname) + convert(CHAR(75), @details)
+
+	FETCH NEXT
+	FROM cur_productinfo
+	INTO @productname
+		,@details;
+END
+
+CLOSE cur_productinfo;
+
+DEALLOCATE cur_productinfo;
+
+
+
+
+
+
+
+
+PRINT '---------------------------------------------------------------------'
+PRINT '---           Nextgen Product Installation Status End             ---'
+PRINT '---------------------------------------------------------------------'
+PRINT ''
+PRINT ''
+End
+Else Begin Print ' ' End
+Declare @EDR_Version varchar(25)
+select top 1 @EDR_Version = version from version where product_id = 'EDR' order by create_timestamp desc
+Print 'EDR Information:'
+Print '----------------'
+if exists (select version from version where product_id = 'EDR')
+BEGIN
+Print 'Current EDR Version: ' +@EDR_Version +''
+Print 'Minimum EDR for 6.2021.1 =  5.0.3.72  (5.0 UD3 Patch 1)'
+Print 'Minimum EDR for 5.9.2020.1 =  5.0.1.11 (5.0 UD1 Patch 2)'
+Print 'Minimum EDR for 5.9.3/8.4.3 =  5.0.1.11 (5.0 UD1 Patch 2)'
+END
+if not exists (select version from version where product_id = 'EDR')
+BEGIN
+Print 'EDR is either not installed or is a pre-5.x version. Please confirm with client'
+END
+Print ' '
+Print ' '
+Print 'EDI Information:'
+Print '---------------'
+IF OBJECT_ID('NextGenEDI_VM_Log') IS NOT NULL and OBJECT_ID ('EDI_Console_Version') IS NULL
+BEGIN
+Print 'An old version of EDI is installed and should be upgraded'
+Print ' '
+Print ' '
+END
+IF OBJECT_ID('NextGenEDI_VM_Log') is NULL and OBJECT_ID ('EDI_Console_Version') IS NOT NULL
+BEGIN
+Declare @EDI_Version varchar(25) 
+select top 1 @EDI_Version = version from EDI_Console_Version order by create_timestamp desc
+Print 'EDI Version:' + @EDI_Version
+Print ' '
+Print ' '
+END
+IF OBJECT_ID('NextGenEDI_VM_Log') is NULL and OBJECT_ID ('EDI_Console_Version') IS NULL
+BEGIN
+print 'No EDI installation found.'
+Print ' '
+Print ' '
+END
+
+
+PRINT '------------------------------------------------------------'
+PRINT '---               ANCILLARY INFORMATION                  ---'
+PRINT '------------------------------------------------------------'
+PRINT ''
+Print'Ancillary products with licenses:'
+Print'--------------------------------'
+select 
+       Case when Product_id = 'ADVANCEDCT' then 'Advanced Chart Tracking'
+       when Product_id = 'ART' then 'Advanced Reporting Tool'
+	   when Product_id ='ACPPR' then 'ACP/PIER'
+       when Product_id ='APG' then 'Ambulatory Patient Groups'
+       when Product_id ='API' then 'API External Access'
+       when Product_id = 'BASICCT' then 'Basic Chart Tracking'
+	   when Product_id ='CCIEDITS' then 'CCI Edits'
+       when Product_id ='CHADDRUPD' then 'Fast Forward'
+       when Product_id = 'DASH' then 'NextGen Dashboard'
+       when Product_id = 'DOCFMT' then 'Document File Monitor'
+	   when Product_id ='DOCIE' then 'Document Import/Export'
+       when Product_id ='DOCR' then 'Demographic OCR'
+       when Product_id ='EAS' then 'Enterprise Appointment Scheduling'
+       when Product_id ='EDR' then 'Electronic Dental Records'
+       when Product_id ='EEDITS' then 'NextGen In-Line Edits'
+       when Product_id ='EMDPEDS' then 'Extended Medical Data - Pediatric'
+       when Product_id ='EMR' then 'Enterprise EHR'
+       when Product_id ='EMREXP' then 'EHR Express'
+       when Product_id ='EPM' then 'Enterprise PM'
+       when Product_id = 'FAX' then 'Faxing'
+	   when Product_id ='FORM' then 'Formularies'
+       when Product_id ='HWPI' then 'Healthwise Patient Instructions'
+       when Product_id = 'ICS' then 'Document Management (ICS)'
+	   when Product_id ='ICSBAR' then 'Doc Management Barcode Engine'
+       when Product_id ='ICSOCR' then 'Doc Management OCR Engine'
+       when Product_id = 'ICSRS' then 'Document Management Remote Scan'
+       when Product_id = 'IMG' then 'EHR Imaging'
+	   when Product_id ='MEDNEC' then 'Medical Necessity'
+       when Product_id = 'MOBILE' then 'NextGen Mobile'
+       when Product_id = 'NCSCONUTIL' then 'Contract Utility'
+       when Product_id = 'NEXTMD' then 'Patient Portal'
+	   when Product_id ='NEXTMDRTS' then 'Patient Portal RT Scheduling'
+       when Product_id ='NEXTPEN' then 'NextPen Desktop'
+       when Product_id ='NEXTPENPR' then 'NextPen Print'
+       when Product_id ='NGCCOW' then 'CCOW'
+       when Product_id ='NGEPC' then 'Estimate Patient Cost'
+       when Product_id ='NGGO' then 'NextGen Go'
+       when Product_id = 'NOTEM' then 'NextGen Transcription Management'
+       when Product_id = 'OPTIK' then 'Optical Management'
+	   when Product_id ='PATED' then 'Patient Education'
+       when Product_id = 'PATREG' then 'Patient Management Hub'
+       when Product_id = 'PATSYNC' then 'Remote Patient Chart Synchronization'
+       when Product_id = 'PDA' then 'NextGen PDA'
+	   when Product_id ='POPHEALTH' then 'NextGen Care Outreach'
+       when Product_id = 'REGED' then 'Region Editor'
+       when Product_id ='RHI' then 'NG Real Time Claims'
+       when Product_id ='RTA' then 'NG Real Time Claims'
+       when Product_id = 'RTFFM' then 'RTF Document Import'
+	   when Product_id ='RTS' then 'NextGen Eligibility Verification'
+       when Product_id ='TMPED' then 'Template Editor'
+       when Product_id ='TMPIE' then 'Template Import'
+       when Product_id ='VISWEB' then 'Vision Web'
+       when Product_id = 'VSP' then 'VSP'
+       End as 'Product',  modify_timestamp as 'Modify Date'
+from license_mstr
+where product_id in ( 'ADVANCEDCT','ART','ACPPR','APG','API','BASICCT','CCIEDITS','CHADDRUPD','DASH','DOCFMT','DOCIE','DOCR','EAS','EDR','EEDITS','EMDPEDS','EMR','EMREXP','EPM','FAX','FORM','HWPI','ICS','ICSBAR','ICSOCR','ICSRS','IMG','MEDNEC','MOBILE','NCSCONUTIL','NEXTMD','NEXTMDRTS','NEXTPEN','NEXTPENPR','NGCCOW','NGEPC','NGGO','NOTEM','OPTIK','PATED','PATREG','PATSYNC','PDA','POPHEALTH','REGED','RTA','RTFFM','RHI','RTS','TMPED','TMPIE','VISWEB', 'VSP')
+ORDER BY 1
+
+Print ' '
+
+Declare @Dashcount INT
+Select @DashCount = Count(product_id) from version where product_id like 'Dash%'
+Print ' '
+Print 'Dashboard Information:                '
+Print '-------------------------------------'
+Print ' '
+If @DashCount > 0
+select distinct product_id as 'Product', max(version) as 'Version' from version where product_id like 'Dash%' group by product_id
+else 
+Print 'Dashboard Is Not Installed'
+Print ' '
+Print ' '
+Print 'Population Health Install Status:'
+Print '---------------------------------'
+If exists (select * from information_schema.tables where table_name = 'ncs_pb_prefs')
+Begin
+       Print 'Population Health Is Installed'
+end  
+else 
+begin
+      Print 'Population Health Is Not Installed'
+end
+Print ' '
+--Product versions
+print ''
+print 'Product                            Version         Date Installed/Applied'
+print '-------                            -------         ----------------------'
+
+set nocount on
+
+IF EXISTS (select * from sysobjects where name = 'Version' and xtype = 'u')
+Begin
+
+DECLARE C CURSOR for
+
+SELECT
+       convert(char(35),(rtrim(ltrim(product_id))) + ' (' + description + ')   ' ) as Product, convert(char(15),version) as version, modify_timestamp 
+       from 
+              version 
+       where product_id not like 'PKG' 
+	   AND (description  not LIKE '%Package%' and description not like '%Hot Fix%')
+	   AND (product_id NOT IN ('KBM', 'EMR', 'EPM', 'TMPL', 'NMA', 'RPTUPD'))
+	   AND product_id NOT LIKE 'Dash%' and product_id not like 'HF%'
+       order by 
+              modify_timestamp desc
+
+OPEN C
+FETCH C INTO @field1, @field2, @field3
+WHILE (@@FETCH_STATUS=0) BEGIN
+------------------------------
+
+Print @field1 + ' ' + @field2 + ' ' + @field3
+FETCH C INTO @field1, @field2, @field3
+END
+
+CLOSE C
+DEALLOCATE C
+End
+ELSE
+Print 'Version table does not exist'
+
+Print ' '
+Print ' '
+Print 'Intrf_Queue Counts By State:'
+Print '----------------------------'
+Begin
+Select state as 'State', Count(*) as 'Count' from intrf_queue group by state order by 2 
+END
+BEGIN
+Select  Count(*) as 'Total Intrf_Queue Count' from intrf_queue with(nolock)
+END 
+Print ' '
+Print ' '
+
+Print 'BBP and Preference/Security Check:'
+Print '----------------------------------'
+Print 'Table Counts'
+Print '-----------------------------'
+Print ' '
+Print 'Record count for bbp_job_type: ' select count(*) from bbp_job_type
+Print ' '
+Print 'Record count for bbp_setting_type: ' select count(*) from bbp_setting_type
+Print ' '
+Print 'Record count for claim_edits: ' select count(*) from claim_edits
+Print ' '
+Print 'Record count for security_items: ' select count(*) from security_items
+Print ' '
+Print 'Record count for preference_list: ' select count(*) from preference_list
+Print ' '
+Print ' '
+Print '----------------------'
+Print 'Lab count By Practice'
+Print '----------------------'
+;WITH paq_labs_pre_upgrade
+AS (
+	SELECT sm.practice_id, pm.provider_id, count(DISTINCT order_num) AS count
+	FROM lab_nor ln
+	JOIN patient_encounter pe ON ln.enc_id = pe.enc_id
+	JOIN signoff_map sm ON pe.practice_id = sm.practice_id
+	JOIN provider_mstr pm ON pm.provider_id = CASE 
+			WHEN sm.item_name = ('E')
+				THEN COALESCE(ln.paq_provider_id, pe.rendering_provider_id)
+			WHEN sm.item_name = 'O'
+				THEN COALESCE(ln.paq_provider_id, ln.ordering_provider)
+			END
+	WHERE ln.delete_ind = 'N'
+		AND order_type = 'L'
+		AND ngn_status = 'Assigned'
+	GROUP BY sm.practice_id, pm.provider_id
+	), 
+paq_labs_post_upgrade
+AS (
+	SELECT sm.practice_id, pm.provider_id, count(DISTINCT ln.order_num) AS count
+	FROM lab_nor ln
+	JOIN lab_results_obr_p lrop ON lrop.ngn_order_num = ln.order_num
+	JOIN patient_encounter pe ON ln.enc_id = pe.enc_id
+	JOIN signoff_map sm ON pe.practice_id = sm.practice_id
+	JOIN provider_mstr pm ON pm.provider_id = CASE 
+			WHEN sm.item_name = ('E')
+				THEN COALESCE(ln.paq_provider_id, pe.rendering_provider_id)
+			WHEN sm.item_name = 'O'
+				THEN COALESCE(ln.paq_provider_id, ln.ordering_provider)
+			END
+	WHERE ln.delete_ind = 'N'
+		AND order_type = 'L'
+		AND (
+			ngn_status = 'Assigned'
+			OR (
+				ln.ngn_status NOT IN ('Assigned', 'Signed-Off', 'SignedOff')
+				AND NOT EXISTS (
+					SELECT 1
+					FROM paq_signoff_history s
+					WHERE s.signoff_action = 'A'
+						AND ln.enc_id = s.enc_id
+						AND ln.order_num = s.item_id
+						AND lrop.create_timestamp <= s.create_timestamp
+					)
+				)
+			)
+	GROUP BY sm.practice_id, pm.provider_id
+	)
+SELECT p.practice_name, pm.description, ISNULL(pre.count, 0) AS 'Lab Count Pre Upgrade', post.count AS 'Lab Count Post Upgrade', 
+(post.count - ISNULL(pre.count, 0)) AS 'Additional Lab PAQ Items', ISNULL(ppm.enable_paq_ind, 'N') as 'PAQ Enabled'
+FROM paq_labs_post_upgrade post
+LEFT JOIN paq_labs_pre_upgrade pre ON pre.practice_id = post.practice_id AND pre.provider_id = post.provider_id
+JOIN provider_practice_mstr ppm on post.practice_id = ppm.practice_id and post.provider_id = ppm.provider_id
+JOIN provider_mstr pm on post.provider_id = pm.provider_id
+JOIN practice p ON post.practice_id = p.practice_id
+ORDER BY 5 DESC
+Print ' '
+Print ' '
+Print 'Professional Services Scoping and Timeline'
+Print '-------------------------------------------'
+Print ' '
+PRINT 'SQL Server Version: ' + @@version
+Print ' '
+declare @EnterpriseCount varchar(4)
+set @EnterpriseCount = (select count(*) enterprise_id from enterprise)
+
+Print 'Number of Enterprises: '+ @EnterpriseCount
+Print ' '
+declare @PracticeCount varchar(4)
+set @PracticeCount = (select count(*) enterprise_id from practice where delete_ind='N')
+Print 'Number of Practices: '+ @PracticeCount 
+
+Print ' '
+Declare @PMProvLic varchar(15)
+set @PMProvLic = (select Count(*) PM_Provider_Licenses from license_detail where limit_id in ('EPMPROV', 'EPMMLPROV') )
+Print 'PM Provider Licenses = ' + @PMProvLic
+
+Declare @EMRProvLic varchar(15)
+set @EMRProvLic = (select Count(*) EHR_Provider_Licenses from license_detail where limit_id in ('EMRPROV', 'EMRMLPROV'))
+Print 'EHR Provider Licenses = ' + @EMRProvLic
+Print ' '
+	
+
+declare @KBM_CUSTOM_CORE varchar(50)
+declare @KBM_CUSTOM_Scratch varchar(50)
+
+--Modified templates based on NG KBM templates
+
+select @KBM_CUSTOM_Scratch=count(*) from templates t  with(nolock)
+where not exists (select 1 from template_fields tf with(nolock)
+where t.template_id=tf.template_id
+and tf.field_type = 'label'
+AND  tf.field_name = 'version_label')
+and t.kbm_ind='N'
+and left(template_name,4) not in ('MF1_','PCMH', 'DCE_','CCM_','RCxR')
+and left(template_name,3) not in ('MF_')
+and template_name not in ('Medfusion_template_tools')
+
+
+
+select @KBM_Custom_core=count(*)
+FROM templates t  with(nolock)
+join template_fields tf with(nolock)
+on t.template_id=tf.template_id
+WHERE tf.field_type = 'label'
+AND  tf.field_name = 'version_label'
+AND t.kbm_ind = 'N'
+       and template_name not in ('info_mdm_guidelines_2021')
+and t.create_timestamp> (select max(create_timestamp) from version where product_id='EMR')
+
+
+print 'Custom Templates based on KBM Templates since last kbm upgrade: '+@Kbm_Custom_Core
+print 'Custom Templates not based on KBM Template: '+@Kbm_Custom_scratch
+Print ' '
+
+
+Print 'Upgrade Calculator Checks:'
+Print '--------------------------'
+IF EXISTS (select * from sysobjects where name = 'BTU_Version' and xtype = 'u') 
+Begin
+declare @INF_Version varchar(15)
+select top 1 @INF_Version = btu_version from btu_version where btu_version like '50.%' or description like 'INF Solution%' order by create_timestamp desc
+if exists(Select top 1 * from btu_version where btu_version like '50.%' or btu_version like '55.%' or description like 'INF Solution%' order by create_timestamp desc)
+Begin
+print 'INF Version ' +@INF_Version + ' Installed - YES'
+End
+else
+Begin
+print 'INF Installed - NO'
+End
+END
+Else
+Print 'No BTU_Version table is present...INF is not installed'
+
+IF EXISTS (select * from sysobjects where name = 'BTU_Version' and xtype = 'u') 
+Begin
+declare @ETS_Version varchar(15)
+select top 1 @ETS_Version = btu_version from btu_version where btu_version like '30.%' or description like '%Therapy Suite%' order by create_timestamp desc
+if exists(Select top 1 * from btu_version where btu_version like '30.%' or btu_version like '33.%' or description like '%Therapy Suite%' order by create_timestamp desc)
+Begin
+print 'Enterprise Therapy Suite Version ' +@ETS_Version + ' Installed - YES'
+End
+else
+Begin
+print 'Enterprise Therapy Suite Installed - NO'
+End
+END
+Else
+Print 'No BTU_Version table is present...ETS is not installed'
+
+IF EXISTS (select * from sysobjects where name = 'BTU_Version' and xtype = 'u') 
+Begin
+declare @MICS_Version varchar(15)
+select top 1 @MICS_Version = btu_version from btu_version where btu_version like '10.%' order by create_timestamp desc
+if exists(Select top 1 * from btu_version where btu_version like '10.%' order by create_timestamp desc)
+Begin
+print 'MICS Version ' +@MICS_Version + ' Installed - YES'
+End
+else
+Begin
+print 'MICS Installed - NO'
+End
+END
+Else
+Print 'No BTU_Version table is present...MICS is not installed'
+
+IF EXISTS (select * from sysobjects where name = 'BTU_Version' and xtype = 'u') 
+Begin
+declare @Ortho_Version varchar(15)
+select top 1 @Ortho_Version = btu_version from btu_version where btu_version like '80.%' order by create_timestamp desc
+if exists(Select top 1 * from btu_version where btu_version like '80.%' order by create_timestamp desc)
+Begin
+print 'Ortho Suite Version ' +@Ortho_Version + ' Installed - YES'
+End
+else
+Begin
+print 'Ortho Suite Installed - NO'
+End
+END
+Else
+Print 'No BTU_Version table is present...Ortho is not installed'
+--print ''
+--print ''
+--Print 'Procedure Inventory Control Solution (PICS) Install Check:'
+--Print '----------------------------------------------------------'
+IF EXISTS (select * from sysobjects where name = 'BTU_Version' and xtype = 'u') 
+Begin
+declare @PICS_Version varchar(15)
+select top 1 @PICS_Version = btu_version from btu_version where btu_version like '20.%' order by create_timestamp desc
+if exists(Select top 1 * from btu_version where btu_version like '20.%' or btu_version like '20.%' order by create_timestamp desc)
+Begin
+print 'PICS Version ' +@PICS_Version + ' Installed - YES'
+End
+else
+Begin
+print 'PICS Installed - NO'
+End
+END
+Else
+Print 'No BTU_Version table is present...PICS is not installed'
+--print ''
+--print ''
+--CRIS, BH, CG Check
+declare @CG_Version varchar(100)
+declare @BH_Version varchar(100)
+declare @CRIS_Version varchar(100)
+declare @OPH_Version varchar(100)
+declare @OPHTempID varchar(4)
+select @OPHTempID = template_id from templates where template_name = 'OPH_Provider'
+
+SELECT top 1 @BH_Version=btu_version
+FROM btu_version
+where btu_version in ('8.4.3.735','8.4.3.744','8.4.3.761','8.4.3.776','8.4.4.718','8.4.4.726','8.4.4.734''8.4.4.743','8.4.3.790','8.4.3.7006','8.4.3.7014','8.4.3.7024','8.4.3.7041','8.4.3.7063','8.4.3.7081','8.4.3.7146','8.4.3.7191','8.4.3.7249','8.4.3.7264','8.4.3.7342','8.4.3.7348','8.4.3.7359','8.4.3.7377','8.4.3.7394','8.4.3.7403','8.4.3.7414','8.4.3.7426','8.4.3.7429','8.4.3.7431','8.4.3.7432','8.4.3.7441','8.4.3.7633','8.4.3.7646','8.4.4.7657','8.4.3.7661','8.4.3.7517','8.4.3.7518','8.4.4.7514')
+order by create_timestamp desc
+
+SELECT top 1 @OPH_Version=btu_version
+FROM btu_version
+WHERE btu_version like '88.0.1.0'  or btu_version like '8.4.3.815' or btu_version like '8.4.3.850' or btu_version like '88.0.4.9' or BTU_VERSION like '88.0.5.39' or BTU_VERSION like '88.0.6.59' or BTU_VERSION like '88.0.7.48' or BTU_VERSION like '88.0.7.52' or description like '%Ophthalmic Suite%'
+order by create_timestamp desc
+
+
+
+select top 1  @CRIS_Version=btu_version
+from btu_version
+where btu_version like '8.3.10.6%'
+
+Print 'Behavioral Health Install Status:'
+Print '-------------------------------'
+IF EXISTS (select * from sysobjects where name = 'BTU_Version' and xtype = 'u') 
+Begin
+If exists (select top 1 * from btu_version where btu_version in ('8.4.3.735','8.4.3.744','8.4.3.761','8.4.3.776','8.4.4.718','8.4.4.726','8.4.4.734''8.4.4.743','8.4.3.790','8.4.3.7006',
+'8.4.3.7014','8.4.3.7024','8.4.3.7041','8.4.3.7063','8.4.3.7081','8.4.3.7146','8.4.3.7191','8.4.3.7249','8.4.3.7264','8.4.3.7342','8.4.3.7348',
+'8.4.3.7359','8.4.3.7377','8.4.3.7394','8.4.3.7403','8.4.3.7414','8.4.3.7426','8.4.3.7429','8.4.3.7431','8.4.3.7432','8.4.3.7441','8.4.3.7633','8.4.3.7646','8.4.4.7657','8.4.3.7661',
+'8.4.3.7517','8.4.3.7518','8.4.4.7514', '8.4.5.7578') or description like '%Behavioral Health Suite%')
+print 
+'Behavioral Health version ' + @BH_Version+ ' is installed - YES' 
+--'Behavioral Health is installed'
+else
+print
+'Behavioral Health Installed 3.0 or higher installed - NO'
+--Print ' '
+END
+Else
+Print 'No BTU_Version table is present...Behavioral Health is not installed'
+
+
+If Exists (select * from template_fields where default_value LIKE '%CCBHC%')
+print 
+'Behavioral Health 2.0 installed - Yes'
+
+else
+print
+'Behavioral Health 2.0 installed - No'
+
+Print 'OPH Install Status:'
+Print '-------------------'
+IF EXISTS (select * from sysobjects where name = 'BTU_Version' and xtype = 'u') 
+Begin
+If exists (select top 1 * from btu_version WHERE btu_version like '88.0.1.0'  or btu_version like '8.4.3.815' or btu_version like '8.4.3.850' or btu_version like '88.0.4.9' or BTU_VERSION like '88.0.5.39' or BTU_VERSION like '88.0.6.59' or BTU_VERSION like '88.0.7.48' or BTU_VERSION like '88.0.7.52' or description like '%Ophthalmic Suite%')
+print
+'OPH Package Version ' + @OPH_Version+ ' Is Installed - YES' 
+--'Behavioral Health is installed' 
+else
+print
+'OPH installed - NO'
+END
+Else
+Print 'No BTU_Version table is present...OPH is not installed'
+
+IF EXISTS (SELECT 1 from INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = 'np_pensystempreferences')
+BEGIN
+  Declare @nextpenversion varchar(4);
+  SELECT @nextpenversion = value FROM np_pensystempreferences WHERE name = 'NextPenVersion';
+if (@nextpenversion IS NOT NULL)
+BEGIN
+ Print 'NextPen Version - '+ @nextpenversion 
+  END
+ else
+ Begin
+ if @nextpenversion = NULL
+ Print 'NextPen Version - No NextPen Installation Found'
+ End
+ END
+ else
+ Begin
+ Print 'NextPen Version - No NextPen Installation Found'
+ End
+
+if exists (Select product_id from version where product_id like 'Dash%')
+BEGIN
+Print 'Dashboard Installed – YES'
+END
+else
+BEGIN
+Print 'Dashboard Installed – NO'
+END
+If exists (select * from information_schema.tables where table_name = 'ncs_pb_prefs')
+Begin
+       Print 'Population Health Installed - YES'
+end  
+else 
+begin
+      Print 'Population Health Installed - NO'
+end
+if exists (select version from version where product_id = 'EDR')
+BEGIN
+Print 'EDR Installed - YES'
+END
+else
+BEGIN
+Print 'EDR Installed - EDR is either not installed or is a pre-5.x version. Please confirm with client'
+Print ' '
+Print ' '
+END
+
+Begin
+select 
+       Case 
+       when Product_id = 'NEXTMD' then 'Legacy Patient Portal Licenses installed'
+       End as 'Portal Product'
+from license_mstr
+where product_id in ('NEXTMD')
+ORDER BY 1
+End
+
+-- Find Aviable Enterprise UD fields
+-- If UD field listed with Medfusion Patient Status then a mapping already exsists and should be used
+select enterprise_id,
+Case 
+When ud_demo1 = 'Medfusion Patient Status' then 'Enterprise Live on Medfusion 1.0'
+When ud_demo2 = 'Medfusion Patient Status' then 'Enterprise Live on Medfusion 1.0'
+When ud_demo3 = 'Medfusion Patient Status' then 'Enterprise Live on Medfusion 1.0'
+When ud_demo4 = 'Medfusion Patient Status' then 'Enterprise Live on Medfusion 1.0'
+When ud_demo5 = 'Medfusion Patient Status' then 'Enterprise Live on Medfusion 1.0'
+When ud_demo6 = 'Medfusion Patient Status' then 'Enterprise Live on Medfusion 1.0'
+When ud_demo7 = 'Medfusion Patient Status' then 'Enterprise Live on Medfusion 1.0'
+When ud_demo8 = 'Medfusion Patient Status' then 'Enterprise Live on Medfusion 1.0'
+When ud_demo9 = 'Medfusion Patient Status' then 'Enterprise Live on Medfusion 1.0'
+When ud_demo10 = 'Medfusion Patient Status' then 'Enterprise Live on Medfusion 1.0'
+When ud_demo11 = 'Medfusion Patient Status' then 'Enterprise Live on Medfusion 1.0'
+When ud_demo12 = 'Medfusion Patient Status' then 'Enterprise Live on Medfusion 1.0'
+When ud_demo13 = 'Medfusion Patient Status' then 'Enterprise Live on Medfusion 1.0'
+When ud_demo1 = 'Medfusion Portal Status' then 'Enterprise Live on Medfusion 1.0'
+When ud_demo2 = 'Medfusion Portal Status' then 'Enterprise Live on Medfusion 1.0'
+When ud_demo3 = 'Medfusion Portal Status' then 'Enterprise Live on Medfusion 1.0'
+When ud_demo4 = 'Medfusion Portal Status' then 'Enterprise Live on Medfusion 1.0'
+When ud_demo5 = 'Medfusion Portal Status' then 'Enterprise Live on Medfusion 1.0'
+When ud_demo6 = 'Medfusion Portal Status' then 'Enterprise Live on Medfusion 1.0'
+When ud_demo7 = 'Medfusion Portal Status' then 'Enterprise Live on Medfusion 1.0'
+When ud_demo8 = 'Medfusion Portal Status' then 'Enterprise Live on Medfusion 1.0'
+When ud_demo9 = 'Medfusion Portal Status' then 'Enterprise Live on Medfusion 1.0'
+When ud_demo10 = 'Medfusion Portal Status' then 'Enterprise Live on Medfusion 1.0'
+When ud_demo11 = 'Medfusion Portal Status' then 'Enterprise Live on Medfusion 1.0'
+When ud_demo12 = 'Medfusion Portal Status' then 'Enterprise Live on Medfusion 1.0'
+When ud_demo13 = 'Medfusion Portal Status' then 'Enterprise Live on Medfusion 1.0'
+Else 'No Medfusion 1.0 Configurations in Enterprise'
+End as 'Medfusion 1.0 UD Fields'
+from enterprise_prefs
+
+Begin
+if exists (select *
+from doc_type_mstr
+where description = 'Medfusion Portal Document')
+
+Select 'Medfusion is installed' as MedfusionStatus
+
+Else Select 'Medfusion Document Type is not isntalled' as MedfusionDocTypeStatus
+
+End
+Print ' '
+Print 'PxP Site Generator Information'
+IF EXISTS (Select * from sysobjects where name = 'mfconfig')
+Begin
+IF EXISTS (Select * from sysobjects where name = 'nxmd_practices')
+Begin
+select p.enterprise_id,
+p.practice_id ,
+p.practice_name,
+Case when exists (select option_value from configuration_options where app_name = 'API'and key_name ='SiteId')
+then (select option_value from configuration_options where app_name = 'API'and key_name ='SiteId')
+Else 'NGE API Site ID does not exsist'
+End as 'SiteID'
+,Case when p.practice_id in (m.configvalue) then 'Y'
+Else 'N'
+End as PXP_Portal_Enabled
+,Case when p.practice_id in (pp.practice_id) then 'Y'
+Else 'N'
+End as 'Nxmd_portal_Enabled'
+,case when EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE='BASE TABLE' and table_name = 'pxp_enrollments') Then 'Y'
+Else 'N'
+End as Phoenix_Practice
+from practice p
+left join nxmd_practices pp on pp.practice_id = p.practice_id and pp.nextmd_enabled = 'Y'
+left join mfconfig m on p.practice_id = m.configvalue and m.configkey = 'NG_PRACTICE_ID'
+END
+END
+Else
+IF EXISTS (Select * from sysobjects where name = 'nxmd_practices')
+Begin
+select p.enterprise_id,
+p.practice_id ,
+p.practice_name,
+Case when exists (select option_value from configuration_options where app_name = 'API'and key_name ='SiteId')
+then (select option_value from configuration_options where app_name = 'API'and key_name ='SiteId')
+Else 'NGE API Site ID does not exsist'
+End as 'SiteID'
+,'N' as 'PXP_Portal_Enabled'
+,Case when p.practice_id in (pp.practice_id) then 'Y'
+Else 'N'
+End as 'Nxmd_portal_Enabled'
+,case when EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE='BASE TABLE' and table_name = 'pxp_enrollments') Then 'Y'
+Else 'N'
+End as Phoenix_Practice
+from practice p
+left join nxmd_practices pp on pp.practice_id = p.practice_id and pp.nextmd_enabled = 'Y'
+End
+Else
+IF EXISTS (Select * from sysobjects where name = 'mfconfig')
+Begin
+select p.enterprise_id,
+p.practice_id ,
+p.practice_name,
+Case when exists (select option_value from configuration_options where app_name = 'API'and key_name ='SiteId')
+then (select option_value from configuration_options where app_name = 'API'and key_name ='SiteId')
+Else 'NGE API Site ID does not exsist'
+End as 'SiteID'
+,Case when p.practice_id in (m.configvalue) then 'Y'
+Else 'N'
+End as PXP_Portal_Enabled
+,'N'as 'Nxmd_portal_Enabled'
+,case when EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE='BASE TABLE' and table_name = 'pxp_enrollments') Then 'Y'
+Else 'N'
+End as Phoenix_Practice
+from practice p
+left join mfconfig m on p.practice_id = m.configvalue and m.configkey = 'NG_PRACTICE_ID'
+END
+Else
+Begin
+select p.enterprise_id,
+p.practice_id ,
+p.practice_name,
+Case when exists (select option_value from configuration_options where app_name = 'API'and key_name ='SiteId')
+then (select option_value from configuration_options where app_name = 'API'and key_name ='SiteId')
+Else 'NGE API Site ID does not exsist'
+End as 'SiteID'
+, 'N' as PXP_Portal_Enabled
+,'N'as 'Nxmd_portal_Enabled'
+,case when EXISTS (SELECT * FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE='BASE TABLE' and table_name = 'pxp_enrollments') Then 'Y'
+Else 'N'
+End as Phoenix_Practice
+from practice p
+END
+
+select distinct dept from master_im_
+where create_timestamp >= (CURRENT_TIMESTAMP -90)
+
+select max(modify_timestamp) from ngweb_communications with(nolock)
+
+DROP TABLE #tmp_ng_products
+DROP TABLE #Results
+DROP TABLE #filecount
+DROP TABLE #ServerDatabasesNames 
+
+
+PRINT '----------------------------------------'
+PRINT '------------------ END -----------------'
+PRINT '----------------------------------------'	
+Print '             System Analysis Version 10.5'
+
+
